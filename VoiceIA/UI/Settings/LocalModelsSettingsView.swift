@@ -4,6 +4,7 @@ import SwiftUI
 struct LocalModelsSettingsView: View {
     @Bindable var viewModel: SettingsViewModel
     @State private var showMissingModelAlert = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(spacing: 16) {
@@ -29,7 +30,7 @@ struct LocalModelsSettingsView: View {
                     HStack(spacing: 10) {
                         Image(systemName: "mic.fill")
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(SettingsTheme.accentGradient)
+                            .foregroundStyle(SettingsTheme.accent)
                             .frame(width: 28, height: 28)
                             .background(Circle().fill(.white.opacity(0.08)))
 
@@ -86,7 +87,7 @@ struct LocalModelsSettingsView: View {
         .padding(10)
         .background {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(.white.opacity(0.04))
+                .fill(SettingsTheme.cardFill(colorScheme))
         }
     }
 
@@ -113,7 +114,7 @@ struct LocalModelsSettingsView: View {
                 ))
                 .labelsHidden()
                 .toggleStyle(.switch)
-                .tint(SettingsTheme.blue)
+                .tint(SettingsTheme.accent)
             }
         }
     }
@@ -129,7 +130,7 @@ struct LocalModelsSettingsView: View {
                 Toggle("", isOn: $viewModel.useLocalWhisperGPU)
                     .labelsHidden()
                     .toggleStyle(.switch)
-                    .tint(SettingsTheme.blue)
+                    .tint(SettingsTheme.accent)
             }
         }
     }
@@ -156,7 +157,7 @@ struct LocalModelsSettingsView: View {
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: "cpu")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(SettingsTheme.accentGradient)
+                        .foregroundStyle(SettingsTheme.accent)
                         .frame(width: 32, height: 32)
                         .background(Circle().fill(.white.opacity(0.08)))
 
@@ -206,7 +207,7 @@ struct LocalModelsSettingsView: View {
             if downloading, let progress {
                 VStack(alignment: .leading, spacing: 6) {
                     ProgressView(value: progress.fractionCompleted)
-                        .tint(SettingsTheme.cyan)
+                        .tint(SettingsTheme.accent)
                     HStack {
                         HStack(spacing: 8) {
                             Text(progress.percentLabel)
@@ -226,16 +227,12 @@ struct LocalModelsSettingsView: View {
         .padding(16)
         .background {
             RoundedRectangle(cornerRadius: SettingsTheme.cardCornerRadius, style: .continuous)
-                .fill(.white.opacity(selected ? 0.08 : 0.05))
-                .background(
-                    RoundedRectangle(cornerRadius: SettingsTheme.cardCornerRadius, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                )
+                .fill(selected ? SettingsTheme.sidebarSelection(colorScheme) : SettingsTheme.cardFill(colorScheme))
         }
         .overlay {
             RoundedRectangle(cornerRadius: SettingsTheme.cardCornerRadius, style: .continuous)
                 .strokeBorder(
-                    selected ? SettingsTheme.blue.opacity(0.45) : .white.opacity(0.10),
+                    selected ? SettingsTheme.accent.opacity(0.55) : SettingsTheme.cardStroke(colorScheme),
                     lineWidth: SettingsTheme.hairline
                 )
         }

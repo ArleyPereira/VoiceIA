@@ -202,7 +202,7 @@ private struct ClipboardFallbackDialogView: View {
             HStack(spacing: 12) {
                 Image(systemName: "doc.on.clipboard.fill")
                     .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(SettingsTheme.accentGradient)
+                    .foregroundStyle(SettingsTheme.accent)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(reason.title)
@@ -277,7 +277,7 @@ private struct DialogHalfButtonStyle: ButtonStyle {
             .padding(.vertical, 10)
             .background {
                 if emphasized {
-                    Capsule().fill(SettingsTheme.accentGradient)
+                    Capsule().fill(SettingsTheme.accent.opacity(0.95))
                 } else {
                     Capsule().fill(.white.opacity(configuration.isPressed ? 0.14 : 0.08))
                 }

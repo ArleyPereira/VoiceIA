@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import SwiftUI
 
 /// Idiomas disponíveis na tela de configurações.
 enum TranscriptionLanguageOption: String, CaseIterable, Identifiable {
@@ -53,6 +54,13 @@ final class SettingsViewModel {
     /// Notifica o AppState para liberar o Whisper da memória quando a política muda.
     var onTranscriptionPolicyChanged: () -> Void
 
+    /// Notifica a janela para aplicar Sistema / Claro / Escuro.
+    var onAppearanceThemeChanged: () -> Void
+
+    /// Incrementado quando o macOS muda claro/escuro — força o SwiftUI a
+    /// reler `resolvedColorScheme` com a preferência em “Sistema”.
+    private(set) var systemAppearanceEpoch = 0
+
     /// Texto digitado no campo (nunca logado).
     var apiKeyDraft: String = ""
 
@@ -72,11 +80,13 @@ final class SettingsViewModel {
     init(
         settings: AppSettings,
         localModelStore: LocalWhisperModelStore? = nil,
-        onTranscriptionPolicyChanged: @escaping () -> Void = {}
+        onTranscriptionPolicyChanged: @escaping () -> Void = {},
+        onAppearanceThemeChanged: @escaping () -> Void = {}
     ) {
         self.settings = settings
         self.localModelStore = localModelStore ?? .shared
         self.onTranscriptionPolicyChanged = onTranscriptionPolicyChanged
+        self.onAppearanceThemeChanged = onAppearanceThemeChanged
         settings.refreshAPIKeyStatus()
         refreshPermissions()
         self.localModelStore.refreshDiskState()
@@ -84,6 +94,29 @@ final class SettingsViewModel {
 
     var hasAPIKey: Bool {
         settings.hasAPIKey
+    }
+
+    /// Tema da interface (Sistema / Claro / Escuro).
+    var appearanceTheme: AppAppearanceTheme {
+        get { AppAppearanceTheme(rawValue: settings.appearanceTheme) ?? .system }
+        set {
+            guard settings.appearanceTheme != newValue.rawValue else { return }
+            settings.appearanceTheme = newValue.rawValue
+            onAppearanceThemeChanged()
+        }
+    }
+
+    /// Esquema SwiftUI correspondente (sempre concreto para atualizar na hora).
+    var preferredColorScheme: ColorScheme {
+        _ = systemAppearanceEpoch
+        return appearanceTheme.resolvedColorScheme()
+    }
+
+    /// O macOS trocou claro/escuro — reaplica se a preferência for “Sistema”.
+    func handleSystemAppearanceChanged() {
+        systemAppearanceEpoch &+= 1
+        guard appearanceTheme == .system else { return }
+        onAppearanceThemeChanged()
     }
 
     var isTestModeEnabled: Bool {

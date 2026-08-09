@@ -13,5 +13,5 @@ enum HotkeyConfiguration {
     static let displayName = "⇧ Tab"
 
     /// Instrução curta de uso.
-    static let holdInstruction = "⇧ Tab para gravar · pause/continua no HUD · ⇧ Tab de novo para enviar"
+    static let holdInstruction = "⇧ Shift + Tab para gravar · pause/continua no HUD · ⇧ Shift + Tab de novo para enviar"
 }

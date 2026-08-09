@@ -35,12 +35,17 @@ final class LocalWhisperTranscriptionService: TranscriptionService, @unchecked S
 
         logger.notice("Transcrevendo localmente com \(modelKind.displayName, privacy: .public) (GPU=\(useGPU, privacy: .public)).")
 
+        let samples = try WhisperAudio.samples(fromFile: audioURL)
+        guard SpeechPresenceAnalyzer.hasSpeechEnergy(in: samples) else {
+            logger.notice("Áudio sem energia de fala — ignorando (evita alucinação do Whisper).")
+            throw VoiceInputError.noSpeechDetected
+        }
+
         let whisper = try await loadModel(at: modelURL, useGPU: useGPU)
         // Libera assim que a ditagem termina: manter ~GB em cache entre usos
         // deixa a RAM alta mesmo ocioso. A próxima ditagem recarrega sob demanda.
         defer { unloadCachedModel() }
 
-        let samples = try WhisperAudio.samples(fromFile: audioURL)
         let options = WhisperOptions(
             language: language == "auto" ? nil : language,
             translate: false
@@ -49,6 +54,10 @@ final class LocalWhisperTranscriptionService: TranscriptionService, @unchecked S
         let trimmed = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw VoiceInputError.emptyTranscription
+        }
+        if SpeechPresenceAnalyzer.looksLikeSilenceHallucination(trimmed) {
+            logger.notice("Transcrição descartada como alucinação de silêncio: \(trimmed, privacy: .public)")
+            throw VoiceInputError.noSpeechDetected
         }
         return trimmed
     }

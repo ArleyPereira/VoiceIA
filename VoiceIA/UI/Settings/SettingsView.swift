@@ -42,6 +42,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @Bindable var viewModel: SettingsViewModel
     @State private var selectedTab: SettingsTab = .general
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(spacing: 0) {
@@ -50,8 +51,8 @@ struct SettingsView: View {
             content
         }
         .background(SettingsBackground())
-        .frame(minWidth: 780, minHeight: 540)
-        .preferredColorScheme(.dark)
+        .frame(minWidth: 860, minHeight: 620)
+        .preferredColorScheme(viewModel.preferredColorScheme)
         .onAppear {
             viewModel.refreshPermissions()
             viewModel.localModelStore.refreshDiskState()
@@ -69,15 +70,15 @@ struct SettingsView: View {
             HStack(spacing: 10) {
                 Image(systemName: "waveform.circle.fill")
                     .font(.system(size: 20))
-                    .foregroundStyle(SettingsTheme.accentGradient)
+                    .foregroundStyle(SettingsTheme.accent)
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text("VoiceIA")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(SettingsTheme.primaryLabel(colorScheme))
                     Text("Ditado por voz")
                         .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.45))
+                        .foregroundStyle(SettingsTheme.secondaryLabel(colorScheme))
                 }
             }
             .padding(.horizontal, 12)
@@ -89,16 +90,6 @@ struct SettingsView: View {
             }
 
             Spacer(minLength: 0)
-
-            Text(HotkeyConfiguration.displayName)
-                .font(.system(size: 11, weight: .medium, design: .rounded))
-                .foregroundStyle(.white.opacity(0.55))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Capsule().fill(.white.opacity(0.06)))
-                .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: SettingsTheme.hairline))
-                .padding(.horizontal, 12)
-                .padding(.bottom, 18)
         }
         .padding(.horizontal, 10)
         .frame(width: 208)
@@ -114,11 +105,19 @@ struct SettingsView: View {
                 Image(systemName: tab.icon)
                     .font(.system(size: 12.5, weight: .medium))
                     .frame(width: 18)
-                    .foregroundStyle(isSelected ? .white : .white.opacity(0.55))
+                    .foregroundStyle(
+                        isSelected
+                            ? SettingsTheme.primaryLabel(colorScheme)
+                            : SettingsTheme.tertiaryLabel(colorScheme)
+                    )
 
                 Text(tab.title)
                     .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? .white : .white.opacity(0.65))
+                    .foregroundStyle(
+                        isSelected
+                            ? SettingsTheme.primaryLabel(colorScheme)
+                            : SettingsTheme.secondaryLabel(colorScheme).opacity(1.2)
+                    )
 
                 Spacer(minLength: 0)
             }
@@ -126,18 +125,8 @@ struct SettingsView: View {
             .padding(.vertical, 9)
             .background {
                 if isSelected {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [SettingsTheme.blue.opacity(0.38), SettingsTheme.purple.opacity(0.30)],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .strokeBorder(.white.opacity(0.16), lineWidth: SettingsTheme.hairline)
-                        }
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(SettingsTheme.sidebarSelection(colorScheme))
                 }
             }
             .contentShape(Rectangle())
@@ -147,7 +136,7 @@ struct SettingsView: View {
 
     private var divider: some View {
         Rectangle()
-            .fill(.white.opacity(0.08))
+            .fill(SettingsTheme.divider(colorScheme))
             .frame(width: 1)
             .ignoresSafeArea()
     }
@@ -160,11 +149,11 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(selectedTab.title)
                         .font(.system(size: 22, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(SettingsTheme.primaryLabel(colorScheme))
 
                     Text(selectedTab.subtitle)
                         .font(.system(size: 12.5))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(SettingsTheme.secondaryLabel(colorScheme))
                 }
                 .padding(.bottom, 2)
 
@@ -191,27 +180,45 @@ struct SettingsView: View {
 
     private var generalTab: some View {
         VStack(spacing: 16) {
+            SettingsCard {
+                HStack(alignment: .top, spacing: 16) {
+                    Text("Aparência")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(SettingsTheme.primaryLabel(colorScheme))
+                        // Compensa a altura visual da miniatura para alinhar o topo do texto
+                        // com o topo das opções (baseline óptica da primeira linha).
+                        .padding(.top, 2)
+
+                    Spacer(minLength: 12)
+
+                    AppearanceThemePicker(
+                        selection: Binding(
+                            get: { viewModel.appearanceTheme },
+                            set: { viewModel.appearanceTheme = $0 }
+                        )
+                    )
+                }
+            }
+
             SettingsCard(title: "Atalho de ditado") {
-                HStack(spacing: 14) {
-                    Text(HotkeyConfiguration.displayName)
-                        .font(.system(size: 18, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                        .background {
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(.white.opacity(0.07))
-                        }
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(.white.opacity(0.14), lineWidth: SettingsTheme.hairline)
-                        }
+                VStack(spacing: 12) {
+                    HStack(spacing: 10) {
+                        HotkeyKeyCap(symbol: "⇧", title: "Shift")
+
+                        Text("+")
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .foregroundStyle(SettingsTheme.tertiaryLabel(colorScheme))
+
+                        HotkeyKeyCap(title: "Tab")
+                    }
 
                     Text(HotkeyConfiguration.holdInstruction)
                         .font(.system(size: 12))
-                        .foregroundStyle(.white.opacity(0.6))
+                        .foregroundStyle(SettingsTheme.tertiaryLabel(colorScheme))
+                        .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                .frame(maxWidth: .infinity)
             }
 
             SettingsCard(
@@ -277,27 +284,21 @@ struct SettingsView: View {
                         Text(pane.title)
                             .font(.system(size: 12.5, weight: .semibold))
                     }
-                    .foregroundStyle(.white.opacity(isSelected ? 0.95 : 0.55))
+                    .foregroundStyle(.primary.opacity(isSelected ? 0.95 : 0.55))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
                     .background {
                         if isSelected {
                             Capsule()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [SettingsTheme.blue.opacity(0.45), SettingsTheme.purple.opacity(0.35)],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    )
-                                )
+                                .fill(SettingsTheme.sidebarSelection(colorScheme))
                                 .overlay {
-                                    Capsule().strokeBorder(.white.opacity(0.18), lineWidth: SettingsTheme.hairline)
+                                    Capsule().strokeBorder(SettingsTheme.cardStroke(colorScheme), lineWidth: SettingsTheme.hairline)
                                 }
                         } else {
                             Capsule()
-                                .fill(.white.opacity(0.05))
+                                .fill(SettingsTheme.cardFill(colorScheme))
                                 .overlay {
-                                    Capsule().strokeBorder(.white.opacity(0.10), lineWidth: SettingsTheme.hairline)
+                                    Capsule().strokeBorder(SettingsTheme.divider(colorScheme), lineWidth: SettingsTheme.hairline)
                                 }
                         }
                     }
@@ -368,7 +369,7 @@ struct SettingsView: View {
                         Toggle("", isOn: $viewModel.isTestModeEnabled)
                             .labelsHidden()
                             .toggleStyle(.switch)
-                            .tint(SettingsTheme.blue)
+                            .tint(SettingsTheme.accent)
                     }
                 }
             }
@@ -408,24 +409,24 @@ struct SettingsView: View {
             HStack {
                 Text(viewModel.selectedLanguage.displayName)
                     .font(.system(size: 13))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(SettingsTheme.primaryLabel(colorScheme))
 
                 Spacer(minLength: 8)
 
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(SettingsTheme.secondaryLabel(colorScheme))
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
                 RoundedRectangle(cornerRadius: SettingsTheme.fieldCornerRadius, style: .continuous)
-                    .fill(.white.opacity(0.06))
+                    .fill(SettingsTheme.fieldFill(colorScheme))
             }
             .overlay {
                 RoundedRectangle(cornerRadius: SettingsTheme.fieldCornerRadius, style: .continuous)
-                    .strokeBorder(.white.opacity(0.14), lineWidth: SettingsTheme.hairline)
+                    .strokeBorder(SettingsTheme.fieldStroke(colorScheme), lineWidth: SettingsTheme.hairline)
             }
             .contentShape(Rectangle())
         }
@@ -449,7 +450,7 @@ struct SettingsView: View {
                         Toggle("", isOn: $viewModel.keepRecordingsAfterTranscription)
                             .labelsHidden()
                             .toggleStyle(.switch)
-                            .tint(SettingsTheme.blue)
+                            .tint(SettingsTheme.accent)
                     }
 
                     SettingsDivider()

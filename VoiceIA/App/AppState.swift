@@ -405,6 +405,19 @@ final class AppState {
         do {
             transcribed = try await transcriptionService.transcribe(audioURL: audioURL)
             lastTranscriptionText = transcribed
+        } catch let error as VoiceInputError where error == .noSpeechDetected {
+            // Silêncio: não insere, não abre diálogo de resgate — só avisa de leve.
+            logger.notice("Ditagem sem fala detectada; nada foi inserido.")
+            lastInsertionMessage = error.localizedDescription
+            recordingState = .idle
+            if !settings.keepRecordingsAfterTranscription {
+                try? audioRecorder.deleteRecording(at: audioURL)
+                if lastRecordingURL == audioURL {
+                    lastRecordingURL = nil
+                }
+            }
+            scheduleReturnToIdle(afterMilliseconds: 1_400)
+            return
         } catch let error as VoiceInputError {
             recordingState = .error
             lastInsertionMessage = error.localizedDescription

@@ -7,8 +7,10 @@ final class SettingsWindowController {
     private var window: NSWindow?
     private weak var settings: AppSettings?
     private var viewModel: SettingsViewModel?
+    private var systemAppearanceObserver: NSObjectProtocol?
 
-    private static let contentSize = NSSize(width: 860, height: 580)
+    /// Tamanho mínimo (= padrão ao abrir). O usuário só pode aumentar.
+    private static let defaultContentSize = NSSize(width: 860, height: 620)
 
     /// Mostra (ou reusa) a janela de configurações.
     ///
@@ -18,12 +20,18 @@ final class SettingsWindowController {
         self.settings = settings
         settings.refreshAPIKeyStatus()
 
+        let applyTheme: () -> Void = { [weak self] in
+            self?.applyAppearanceTheme()
+        }
+
         if let viewModel {
             viewModel.onTranscriptionPolicyChanged = onTranscriptionPolicyChanged
+            viewModel.onAppearanceThemeChanged = applyTheme
         } else {
             let viewModel = SettingsViewModel(
                 settings: settings,
-                onTranscriptionPolicyChanged: onTranscriptionPolicyChanged
+                onTranscriptionPolicyChanged: onTranscriptionPolicyChanged,
+                onAppearanceThemeChanged: applyTheme
             )
             self.viewModel = viewModel
             let root = SettingsView(viewModel: viewModel)
@@ -36,10 +44,11 @@ final class SettingsWindowController {
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.isMovableByWindowBackground = true
-            window.appearance = NSAppearance(named: .darkAqua)
             window.backgroundColor = .clear
-            window.setContentSize(Self.contentSize)
-            window.minSize = NSSize(width: 780, height: 540)
+            window.setContentSize(Self.defaultContentSize)
+            window.minSize = window.frameRect(
+                forContentRect: NSRect(origin: .zero, size: Self.defaultContentSize)
+            ).size
             window.center()
             window.isReleasedWhenClosed = false
             window.delegate = WindowCloseObserver.shared
@@ -47,12 +56,48 @@ final class SettingsWindowController {
                 self?.handleClosed()
             }
             self.window = window
+            startObservingSystemAppearance()
         }
+
+        enforceMinimumWindowSize()
+        applyAppearanceTheme()
 
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         window?.orderFrontRegardless()
+    }
+
+    /// Garante o tamanho padrão ao abrir e impede encolher abaixo dele.
+    private func enforceMinimumWindowSize() {
+        guard let window else { return }
+        window.setContentSize(Self.defaultContentSize)
+        window.minSize = window.frameRect(
+            forContentRect: NSRect(origin: .zero, size: Self.defaultContentSize)
+        ).size
+    }
+
+    /// Aplica Sistema / Claro / Escuro na janela AppKit.
+    private func applyAppearanceTheme() {
+        let theme = AppAppearanceTheme(rawValue: settings?.appearanceTheme ?? "") ?? .system
+        // Aparência concreta: `nil` após forçar claro/escuro não reaplica o
+        // tema do sistema até a janela perder o foco.
+        window?.appearance = theme.resolvedNSAppearance()
+        window?.contentView?.appearance = nil
+        window?.displayIfNeeded()
+    }
+
+    private func startObservingSystemAppearance() {
+        guard systemAppearanceObserver == nil else { return }
+        systemAppearanceObserver = DistributedNotificationCenter.default.addObserver(
+            forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.viewModel?.handleSystemAppearanceChanged()
+            }
+        }
     }
 
     private func handleClosed() {
@@ -64,6 +109,12 @@ final class SettingsWindowController {
         }
         if !hasOtherWindows {
             NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    deinit {
+        if let systemAppearanceObserver {
+            DistributedNotificationCenter.default.removeObserver(systemAppearanceObserver)
         }
     }
 }

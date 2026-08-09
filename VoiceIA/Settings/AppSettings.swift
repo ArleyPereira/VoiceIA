@@ -12,6 +12,7 @@ final class AppSettings {
         static let useLocalWhisperGPU = "settings.useLocalWhisperGPU"
         static let selectedLocalWhisperModel = "settings.selectedLocalWhisperModel"
         static let transcriptionBackend = "settings.transcriptionBackend"
+        static let appearanceTheme = "settings.appearanceTheme"
     }
 
     private let apiKeyStore: any APIKeyProvider
@@ -60,6 +61,13 @@ final class AppSettings {
         }
     }
 
+    /// Tema da interface: `system`, `light` ou `dark`.
+    var appearanceTheme: String {
+        didSet {
+            defaults.set(appearanceTheme, forKey: DefaultsKey.appearanceTheme)
+        }
+    }
+
     /// Indica se existe API key salva no Keychain (sem expor o valor).
     private(set) var hasAPIKey: Bool
 
@@ -94,6 +102,13 @@ final class AppSettings {
 
         let storedBackend = defaults.string(forKey: DefaultsKey.transcriptionBackend)
         self.transcriptionBackend = (storedBackend == "local") ? "local" : "api"
+
+        let storedTheme = defaults.string(forKey: DefaultsKey.appearanceTheme)
+        if let storedTheme, AppAppearanceTheme(rawValue: storedTheme) != nil {
+            self.appearanceTheme = storedTheme
+        } else {
+            self.appearanceTheme = AppAppearanceTheme.system.rawValue
+        }
 
         self.hasAPIKey = apiKeyStore.hasAPIKey
     }

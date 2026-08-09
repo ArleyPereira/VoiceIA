@@ -102,7 +102,12 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
 
         logDiagnostics(target: target, captured: captured, live: liveTarget)
 
-        if insertViaAccessibilityVerified(trimmed, into: target) {
+        let chromiumLike = isChromiumLike(target)
+
+        // No Chromium/Electron o `AXSelectedText` pode “aceitar” e até inserir
+        // sem o valor AX refletir direito. Se seguirmos para Unicode/⌘V depois,
+        // o texto entra duas vezes e o diálogo de falha ainda aparece.
+        if !chromiumLike, insertViaAccessibilityVerified(trimmed, into: target) {
             lastMethod = .accessibility
             logger.notice("Inserido via Accessibility em \(target.summary, privacy: .public)")
             return
@@ -119,10 +124,38 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
             logger.notice("Digitação Unicode enviada; campo não expõe valor para verificar.")
             return
         case .rejected:
+            if chromiumLike {
+                // Falso negativo clássico: as teclas já foram para o contenteditable,
+                // mas o AXValue continua no placeholder. Colar de novo duplica.
+                lastMethod = .unicodeTyping
+                logger.notice(
+                    "Digitação Unicode em app Chromium sem confirmação AX — assumindo sucesso (evita duplicar)."
+                )
+                return
+            }
             logger.notice("Digitação Unicode não alterou o campo; tentando clipboard + ⌘V.")
         }
 
         try await insertViaClipboardPaste(trimmed, target: target)
+    }
+
+    /// Cursor, VS Code, Chrome e afins: valor AX do contenteditable é pouco confiável.
+    private func isChromiumLike(_ target: FocusedElement) -> Bool {
+        if let bundle = NSRunningApplication(processIdentifier: target.processID)?
+            .bundleIdentifier?
+            .lowercased() {
+            let markers = [
+                "cursor", "todesktop", "electron", "chrome", "chromium", "brave",
+                "com.microsoft.vscode", "visualstudiocode", "slack", "discord", "figma"
+            ]
+            if markers.contains(where: { bundle.contains($0) }) {
+                return true
+            }
+        }
+        if target.role == "AXWebArea" {
+            return true
+        }
+        return false
     }
 
     private func logDiagnostics(target: FocusedElement, captured: FocusedElement?, live: FocusedElement?) {
@@ -369,15 +402,21 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
             }
         }
 
-        try? await Task.sleep(for: .milliseconds(220))
-
-        return verifyInsertion(
-            in: target,
-            beforeRaw: beforeRaw,
-            before: before,
-            inserted: text,
-            placeholder: placeholder
-        )
+        // O AX do Electron atrasa; várias releituras evitam falso `.rejected`.
+        for attempt in 0..<4 {
+            try? await Task.sleep(for: .milliseconds(attempt == 0 ? 180 : 120))
+            let check = verifyInsertion(
+                in: target,
+                beforeRaw: beforeRaw,
+                before: before,
+                inserted: text,
+                placeholder: placeholder
+            )
+            if check != .rejected {
+                return check
+            }
+        }
+        return .rejected
     }
 
     /// Quebra o texto em blocos curtos: eventos com payload longo demais são
@@ -494,16 +533,34 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
 
         try? await Task.sleep(for: .milliseconds(220))
 
-        if verifyInsertion(
+        // Se o Unicode já tinha entrado e chegamos aqui por falso negativo,
+        // o campo pode já conter o texto — não tratar como falha.
+        let check = verifyInsertion(
             in: target,
             beforeRaw: beforeRaw,
             before: before,
             inserted: text,
             placeholder: placeholder
-        ) == .rejected {
-            logger.notice("⌘V não alterou o campo; inserção considerada falha.")
-            throw VoiceInputError.textInsertionFailed
+        )
+        if check == .confirmed || check == .unknown {
+            return
         }
+        if fieldAlreadyContainsInsertedText(target, inserted: text, placeholder: placeholder) {
+            logger.notice("Campo já contém a ditagem; ⌘V tratado como sucesso.")
+            return
+        }
+        logger.notice("⌘V não alterou o campo; inserção considerada falha.")
+        throw VoiceInputError.textInsertionFailed
+    }
+
+    private func fieldAlreadyContainsInsertedText(
+        _ target: FocusedElement,
+        inserted: String,
+        placeholder: String?
+    ) -> Bool {
+        let raw = copyStringAttribute(target.axElement, kAXValueAttribute as CFString)
+        let value = strippingPlaceholder(from: raw, placeholder: placeholder)
+        return value.contains(inserted)
     }
 
     /// Ativa o app alvo e aguarda ele virar frontmost de fato.
