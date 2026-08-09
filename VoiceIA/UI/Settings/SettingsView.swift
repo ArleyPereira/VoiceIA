@@ -65,6 +65,9 @@ struct SettingsView: View {
             viewModel.refreshPermissions()
             viewModel.localModelStore.refreshDiskState()
         }
+        .onDisappear {
+            viewModel.cancelHotkeyCapture()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             viewModel.refreshPermissions()
             viewModel.localModelStore.refreshDiskState()
@@ -219,25 +222,59 @@ struct SettingsView: View {
                 }
             }
 
-            SettingsCard(title: "Atalho de ditado") {
-                VStack(spacing: 12) {
+            SettingsCard(
+                title: "Atalho de ditado",
+                subtitle: viewModel.isCapturingHotkey
+                    ? (viewModel.hotkeyCaptureHint ?? "Pressione o novo atalho…")
+                    : viewModel.dictationHotkey.holdInstruction
+            ) {
+                VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 10) {
-                        HotkeyKeyCap(symbol: "⇧", title: "Shift")
+                        if viewModel.isCapturingHotkey {
+                            Text("Aguardando teclas…")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(SettingsTheme.accent)
+                        } else {
+                            ForEach(Array(viewModel.dictationHotkey.keyParts.enumerated()), id: \.element.id) { index, part in
+                                if index > 0 {
+                                    Text("+")
+                                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                        .foregroundStyle(SettingsTheme.tertiaryLabel(colorScheme))
+                                }
+                                HotkeyKeyCap(symbol: part.symbol, title: part.title)
+                            }
+                        }
 
-                        Text("+")
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
-                            .foregroundStyle(SettingsTheme.tertiaryLabel(colorScheme))
+                        Spacer(minLength: 8)
 
-                        HotkeyKeyCap(title: "Tab")
+                        if viewModel.isCapturingHotkey {
+                            Button("Cancelar") {
+                                viewModel.cancelHotkeyCapture()
+                            }
+                            .buttonStyle(GhostButtonStyle())
+                        } else {
+                            Button("Alterar") {
+                                viewModel.beginHotkeyCapture()
+                            }
+                            .buttonStyle(GhostButtonStyle())
+                        }
                     }
 
-                    Text(HotkeyConfiguration.holdInstruction)
-                        .font(.system(size: 12))
-                        .foregroundStyle(SettingsTheme.tertiaryLabel(colorScheme))
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if !viewModel.isCapturingHotkey, let hint = viewModel.hotkeyCaptureHint {
+                        Text(hint)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Color(red: 0.40, green: 0.90, blue: 0.62))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .transition(.opacity)
+                            .task(id: hint) {
+                                try? await Task.sleep(for: .seconds(5))
+                                guard !Task.isCancelled else { return }
+                                if viewModel.hotkeyCaptureHint == hint {
+                                    viewModel.clearHotkeyCaptureHint()
+                                }
+                            }
+                    }
                 }
-                .frame(maxWidth: .infinity)
             }
 
             SettingsCard(

@@ -1,17 +1,17 @@
 import Carbon
 import Foundation
 
-/// Configuração central do atalho global de ditado.
+/// Configuração legada / fallback do atalho global de ditado.
 enum HotkeyConfiguration {
     /// Código da tecla Tab.
-    static let keyCode = UInt32(kVK_Tab)
+    static let keyCode = DictationHotkey.default.keyCode
 
     /// Modificador Shift.
-    static let modifiers = UInt32(shiftKey)
+    static let modifiers = DictationHotkey.default.modifiers
 
     /// Texto exibido na interface (⇧ Tab).
-    static let displayName = "⇧ Tab"
+    static let displayName = DictationHotkey.default.displayName
 
     /// Instrução curta de uso.
-    static let holdInstruction = "⇧ Shift + Tab para gravar · pause/continua no HUD · ⇧ Shift + Tab de novo para enviar"
+    static let holdInstruction = DictationHotkey.default.holdInstruction
 }

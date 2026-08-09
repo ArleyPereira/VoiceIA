@@ -91,6 +91,16 @@ final class AppState {
             onRecordingHUDStyleChanged: { [weak self] in
                 guard let self else { return }
                 self.overlayController.sync(with: self)
+            },
+            onDictationHotkeyChanged: { [weak self] in
+                self?.reloadDictationHotkey()
+            },
+            onHotkeyCaptureSessionChanged: { [weak self] isCapturing in
+                if isCapturing {
+                    self?.pauseHotkeyMonitoringForCapture()
+                } else {
+                    self?.reloadDictationHotkey()
+                }
             }
         )
     }
@@ -142,7 +152,7 @@ final class AppState {
         return granted
     }
 
-    /// Liga o monitoramento global de ⇧ Tab.
+    /// Liga o monitoramento global do atalho de ditado.
     func startHotkeyMonitoring() {
         guard !isHotkeyMonitoringEnabled else { return }
 
@@ -157,7 +167,8 @@ final class AppState {
             self?.hotkeyService.resetHoldState()
         }
 
-        hotkeyService.start()
+        let hotkey = settings.dictationHotkey
+        hotkeyService.start(keyCode: hotkey.keyCode, modifiers: hotkey.modifiers)
         isHotkeyMonitoringEnabled = true
     }
 
@@ -166,7 +177,22 @@ final class AppState {
         isHotkeyMonitoringEnabled = false
     }
 
-    /// ⇧ Tab: inicia se idle; se já gravando/pausado, envia para transcrição.
+    /// Reaplica o atalho salvo (após o usuário alterar em Configurações).
+    func reloadDictationHotkey() {
+        let hotkey = settings.dictationHotkey
+        if isHotkeyMonitoringEnabled {
+            hotkeyService.rebind(keyCode: hotkey.keyCode, modifiers: hotkey.modifiers)
+        } else {
+            startHotkeyMonitoring()
+        }
+    }
+
+    /// Pausa o atalho global enquanto a UI captura um novo combo.
+    func pauseHotkeyMonitoringForCapture() {
+        stopHotkeyMonitoring()
+    }
+
+    /// Atalho: inicia se idle; se já gravando/pausado, envia para transcrição.
     func handleHotkeyPressed() async {
         switch recordingState {
         case .recording, .paused:
