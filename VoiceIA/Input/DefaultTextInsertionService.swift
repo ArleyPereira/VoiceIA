@@ -76,7 +76,8 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         }
 
         // O atalho é ⇧ Tab: se o Shift ainda estiver baixo, o ⌘V vira ⌘⇧V e a
-        // digitação sai com caracteres errados.
+        // digitação sai com caracteres errados. Uma vez só: as tentativas de
+        // inserção abaixo não voltam a mexer no teclado físico.
         await waitForClearModifiers()
 
         // Depois de uma transcrição longa o app alvo pode ter perdido o
@@ -105,38 +106,46 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         let chromiumLike = isChromiumLike(target)
 
         // No Chromium/Electron o `AXSelectedText` pode “aceitar” e até inserir
-        // sem o valor AX refletir direito. Se seguirmos para Unicode/⌘V depois,
+        // sem o valor AX refletir direito. Se seguirmos para ⌘V/Unicode depois,
         // o texto entra duas vezes e o diálogo de falha ainda aparece.
+        //
+        // Em campo nativo, porém, escrever no AX é síncrono e não toca no
+        // clipboard: é o caminho mais rápido que existe aqui.
         if !chromiumLike, insertViaAccessibilityVerified(trimmed, into: target) {
             lastMethod = .accessibility
             logger.notice("Inserido via Accessibility em \(target.summary, privacy: .public)")
             return
         }
 
-        // Caminho principal do Cursor/Electron: digitar sem mexer no clipboard.
-        switch await insertViaUnicodeTyping(trimmed, target: target) {
+        // ⌘V é O(1): uma ditagem de 600 caracteres custa o mesmo que uma de 20.
+        // A digitação Unicode manda 2 eventos a cada 16 caracteres e fica cada
+        // vez mais lenta conforme o texto cresce — por isso virou só o resgate.
+        switch await insertViaClipboardPaste(trimmed, target: target) {
         case .confirmed:
-            lastMethod = .unicodeTyping
-            logger.notice("Inserido via digitação Unicode (verificado).")
+            logger.notice("Inserido via clipboard + ⌘V (verificado).")
             return
         case .unknown:
-            lastMethod = .unicodeTyping
-            logger.notice("Digitação Unicode enviada; campo não expõe valor para verificar.")
+            logger.notice("⌘V enviado; campo não expõe valor para verificar.")
             return
         case .rejected:
             if chromiumLike {
-                // Falso negativo clássico: as teclas já foram para o contenteditable,
-                // mas o AXValue continua no placeholder. Colar de novo duplica.
-                lastMethod = .unicodeTyping
+                // Falso negativo clássico: o texto já foi para o contenteditable,
+                // mas o AXValue continua no placeholder. Inserir de novo duplica.
                 logger.notice(
-                    "Digitação Unicode em app Chromium sem confirmação AX — assumindo sucesso (evita duplicar)."
+                    "⌘V em app Chromium sem confirmação AX — assumindo sucesso (evita duplicar)."
                 )
                 return
             }
-            logger.notice("Digitação Unicode não alterou o campo; tentando clipboard + ⌘V.")
+            logger.notice("⌘V não alterou o campo; tentando digitação Unicode.")
         }
 
-        try await insertViaClipboardPaste(trimmed, target: target)
+        switch await insertViaUnicodeTyping(trimmed, target: target) {
+        case .confirmed, .unknown:
+            lastMethod = .unicodeTyping
+            logger.notice("Inserido via digitação Unicode.")
+        case .rejected:
+            throw VoiceInputError.textInsertionFailed
+        }
     }
 
     /// Cursor, VS Code, Chrome e afins: valor AX do contenteditable é pouco confiável.
@@ -244,10 +253,15 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
     /// O Chromium leva alguns instantes para montar a árvore de acessibilidade
     /// depois que ela é solicitada; desistir na primeira resposta devolveria só
     /// a janela, perdendo o campo de texto.
+    /// Espera crescente: o caso comum (campo já pronto) acerta na primeira
+    /// tentativa e não paga nada. Os degraus curtos no início recuperam rápido
+    /// quando o Chromium ainda está montando a árvore, sem desistir cedo.
+    private static let targetRetryDelaysMs = [15, 30, 50, 80, 120, 160, 200]
+
     private func resolveTargetWithRetry() async -> FocusedElement? {
         var lastSeen: FocusedElement?
 
-        for attempt in 0..<8 {
+        for attempt in 0...Self.targetRetryDelaysMs.count {
             if let target = try? accessibilityService.focusedElement(),
                target.processID != ownPID {
                 if resolveEditableTarget(from: target) != nil {
@@ -255,22 +269,32 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
                 }
                 lastSeen = target
             }
-            if attempt < 7 {
-                try? await Task.sleep(for: .milliseconds(80))
+            if attempt < Self.targetRetryDelaysMs.count {
+                try? await Task.sleep(for: .milliseconds(Self.targetRetryDelaysMs[attempt]))
             }
         }
         return lastSeen
     }
 
+    /// Só espera se houver modificador realmente preso.
+    ///
+    /// A versão anterior dormia 50 ms mesmo com o teclado limpo — que é o caso
+    /// de toda ditagem encerrada por toggle, e o custo aparecia em cheio na
+    /// latência percebida.
     private func waitForClearModifiers() async {
         let blocking: CGEventFlags = [.maskShift, .maskCommand, .maskAlternate, .maskControl]
+        guard !CGEventSource.flagsState(.hidSystemState).intersection(blocking).isEmpty else {
+            return
+        }
 
         for _ in 0..<60 {
+            try? await Task.sleep(for: .milliseconds(40))
             if CGEventSource.flagsState(.hidSystemState).intersection(blocking).isEmpty {
+                // Settle curto: o app alvo ainda vai processar o flagsChanged
+                // do release antes de receber o ⌘V.
                 try? await Task.sleep(for: .milliseconds(50))
                 return
             }
-            try? await Task.sleep(for: .milliseconds(40))
         }
         logger.warning("Modificadores ainda pressionados; seguindo mesmo assim.")
     }
@@ -381,7 +405,6 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
     /// de linha em vez de disparar o Enter.
     private func insertViaUnicodeTyping(_ text: String, target: FocusedElement) async -> InsertionCheck {
         try? await activateAndWait(pid: target.processID)
-        await waitForClearModifiers()
 
         let placeholder = axPlaceholder(of: target.axElement)
         let beforeRaw = copyStringAttribute(target.axElement, kAXValueAttribute as CFString)
@@ -492,20 +515,20 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         return after == before ? .rejected : .unknown
     }
 
-    // MARK: - Clipboard + ⌘V (último recurso)
+    // MARK: - Clipboard + ⌘V (caminho principal)
 
     /// Cola via ⌘V e **sempre** devolve o clipboard original ao usuário.
     ///
     /// Nunca deixamos a ditagem na área de transferência sem que o usuário peça:
     /// substituir o que ele havia copiado é perda de dado do ponto de vista dele.
-    private func insertViaClipboardPaste(_ text: String, target: FocusedElement) async throws {
+    private func insertViaClipboardPaste(_ text: String, target: FocusedElement) async -> InsertionCheck {
         let pasteboard = NSPasteboard.general
         let snapshot = ClipboardSnapshot.capture(from: pasteboard)
 
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
             snapshot.restore(into: pasteboard)
-            throw VoiceInputError.textInsertionFailed
+            return .rejected
         }
 
         let placeholder = axPlaceholder(of: target.axElement)
@@ -514,53 +537,34 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
 
         defer { snapshot.restore(into: pasteboard) }
 
-        try await activateAndWait(pid: target.processID)
-        await waitForClearModifiers()
+        try? await activateAndWait(pid: target.processID)
 
-        let posted = postPasteShortcut(tap: .cghidEventTap)
-        if posted {
+        if postPasteShortcut(tap: .cghidEventTap) {
             lastMethod = .clipboardHID
-            logger.notice("Paste enviado via HID tap.")
         } else if postPasteShortcut(tap: .cgSessionEventTap) {
             lastMethod = .clipboardSession
-            logger.notice("Paste enviado via session tap.")
         } else if pasteViaSystemEvents() {
             lastMethod = .clipboardSystemEvents
-            logger.notice("Paste enviado via System Events.")
         } else {
-            throw VoiceInputError.textInsertionFailed
+            return .rejected
         }
 
+        // Marco da latência percebida: daqui em diante o texto já está no campo,
+        // e o que vem depois só confirma e devolve o clipboard.
+        logger.notice("⌘V enviado — texto já entregue ao app.")
+
+        // Settle antes de reler o campo e antes do `defer` devolver o clipboard:
+        // o app alvo precisa consumir o ⌘V com a ditagem ainda lá. Isso roda
+        // depois de as teclas terem chegado, então não atrasa o que o usuário vê.
         try? await Task.sleep(for: .milliseconds(220))
 
-        // Se o Unicode já tinha entrado e chegamos aqui por falso negativo,
-        // o campo pode já conter o texto — não tratar como falha.
-        let check = verifyInsertion(
+        return verifyInsertion(
             in: target,
             beforeRaw: beforeRaw,
             before: before,
             inserted: text,
             placeholder: placeholder
         )
-        if check == .confirmed || check == .unknown {
-            return
-        }
-        if fieldAlreadyContainsInsertedText(target, inserted: text, placeholder: placeholder) {
-            logger.notice("Campo já contém a ditagem; ⌘V tratado como sucesso.")
-            return
-        }
-        logger.notice("⌘V não alterou o campo; inserção considerada falha.")
-        throw VoiceInputError.textInsertionFailed
-    }
-
-    private func fieldAlreadyContainsInsertedText(
-        _ target: FocusedElement,
-        inserted: String,
-        placeholder: String?
-    ) -> Bool {
-        let raw = copyStringAttribute(target.axElement, kAXValueAttribute as CFString)
-        let value = strippingPlaceholder(from: raw, placeholder: placeholder)
-        return value.contains(inserted)
     }
 
     /// Ativa o app alvo e aguarda ele virar frontmost de fato.
@@ -608,10 +612,13 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         commandUp.type = .flagsChanged
         commandUp.flags = []
 
-        // Pequenas pausas: eventos no mesmo instante são descartados por alguns apps.
+        // Pequenas pausas: eventos no mesmo instante são descartados por alguns
+        // apps. Estes 4 × 8 ms são latência percebida — a colagem só acontece
+        // depois do último evento —, então ficam no menor valor que o Chromium
+        // ainda processa de forma confiável.
         for event in [commandDown, vDown, vUp, commandUp] {
             event.post(tap: tap)
-            usleep(18_000)
+            usleep(8_000)
         }
         return true
     }

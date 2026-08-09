@@ -13,12 +13,18 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
 
     /// Mantém o manager quente entre ditagens próximas.
     private var cachedManager: AsrManager?
+    /// Carregamento em andamento — compartilhado entre aquecimento e ditagem
+    /// para o modelo não ser carregado duas vezes em paralelo.
+    private var loadTask: Task<AsrManager, Error>?
+    /// Camadas do decoder do modelo carregado (evita um hop de actor por ditagem).
+    private var cachedDecoderLayers: Int?
     private var warmTask: Task<Void, Never>?
     private var idleUnloadTask: Task<Void, Never>?
 
     /// Após este tempo ocioso o Core ML sai da RAM (Spokenly também não fica
-    /// com ~1 GB residente o tempo todo). A próxima ditagem reaquece no atalho.
-    private static let idleUnloadDelay: Duration = .seconds(120)
+    /// com ~1 GB residente o tempo todo). Dez minutos cobrem uma sessão de
+    /// trabalho contínua sem recarregar; a próxima ditagem reaquece no atalho.
+    private static let idleUnloadDelay: Duration = .seconds(600)
 
     init(settings: AppSettings, modelStore: LocalParakeetModelStore? = nil) {
         self.settings = settings
@@ -29,8 +35,11 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
         cancelIdleUnload()
 
         let pipelineStart = Date()
-        let languageCode = await MainActor.run { settings.transcriptionLanguage }
-        let downloaded = await MainActor.run { modelStore.isDownloaded }
+        // Um hop só: cada `MainActor.run` é uma ida e volta de scheduler no
+        // caminho crítico da ditagem.
+        let (languageCode, downloaded) = await MainActor.run {
+            (settings.transcriptionLanguage, modelStore.isDownloaded)
+        }
         guard downloaded else {
             throw VoiceInputError.localModelMissing
         }
@@ -57,9 +66,13 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
 
         let loadStart = Date()
         let manager = try await loadManager()
+        // O aquecimento roda uma inferência de 1 s de silêncio dentro do mesmo
+        // actor; com o modelo já carregado ela só faria a ditagem real esperar
+        // na fila do actor.
+        warmTask?.cancel()
         let loadMs = Date().timeIntervalSince(loadStart) * 1000
 
-        var decoderState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+        var decoderState = TdtDecoderState.make(decoderLayers: await decoderLayerCount(of: manager))
         let language = Self.mapLanguage(languageCode)
 
         let inferStart = Date()
@@ -98,7 +111,10 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
             do {
                 let start = Date()
                 let manager = try await self.loadManager()
-                var state = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+                // Se uma ditagem real já chegou, ela cancela este Task: rodar o
+                // silêncio agora só a colocaria na fila do actor.
+                guard !Task.isCancelled else { return }
+                var state = TdtDecoderState.make(decoderLayers: await self.decoderLayerCount(of: manager))
                 let silence = [Float](repeating: 0, count: 16_000)
                 _ = try? await manager.transcribe(silence, decoderState: &state, language: .portuguese)
                 self.logger.notice(
@@ -122,6 +138,9 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
         cacheLock.lock()
         let manager = cachedManager
         cachedManager = nil
+        cachedDecoderLayers = nil
+        loadTask?.cancel()
+        loadTask = nil
         cacheLock.unlock()
 
         guard let manager else { return }
@@ -149,6 +168,10 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
         idleUnloadTask = nil
     }
 
+    /// Carrega o modelo uma vez só, mesmo com aquecimento e ditagem concorrendo.
+    ///
+    /// A versão anterior soltava o lock antes de `AsrModels.load`, então o warm
+    /// do atalho e a transcrição podiam carregar ~1 GB de Core ML em duplicata.
     private func loadManager() async throws -> AsrManager {
         cacheLock.lock()
         if let cachedManager {
@@ -156,28 +179,72 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
             cacheLock.unlock()
             return reused
         }
-        cacheLock.unlock()
 
-        // Spokenly / FluidAudio: tudo no ANE. GPU no encoder gasta bem mais
-        // RAM unificada por ~8% de RTFx — não vale para ditado.
-        let configuration = AsrModels.defaultConfiguration()
-        let cacheDir = AsrModels.defaultCacheDirectory(for: .v3)
-        let models = try await AsrModels.load(
-            from: cacheDir,
-            configuration: configuration,
-            version: .v3,
-            encoderComputeUnits: .cpuAndNeuralEngine
-        )
-        let manager = AsrManager(config: .default)
-        try await manager.loadModels(models)
-
-        cacheLock.lock()
-        if let previous = cachedManager, previous !== manager {
-            Task { await previous.cleanup() }
+        let task: Task<AsrManager, Error>
+        if let loadTask {
+            task = loadTask
+        } else {
+            task = makeLoadTask()
+            loadTask = task
         }
-        cachedManager = manager
         cacheLock.unlock()
-        return manager
+
+        do {
+            return try await task.value
+        } catch {
+            cacheLock.lock()
+            if loadTask == task {
+                loadTask = nil
+            }
+            cacheLock.unlock()
+            throw error
+        }
+    }
+
+    private func makeLoadTask() -> Task<AsrManager, Error> {
+        Task { [weak self] in
+            // Spokenly / FluidAudio: tudo no ANE. GPU no encoder gasta bem mais
+            // RAM unificada por ~8% de RTFx — não vale para ditado.
+            let configuration = AsrModels.defaultConfiguration()
+            let cacheDir = AsrModels.defaultCacheDirectory(for: .v3)
+            let models = try await AsrModels.load(
+                from: cacheDir,
+                configuration: configuration,
+                version: .v3,
+                encoderComputeUnits: .cpuAndNeuralEngine
+            )
+            let manager = AsrManager(config: .default)
+            try await manager.loadModels(models)
+
+            if let self {
+                self.cacheLock.lock()
+                let previous = self.cachedManager
+                self.cachedManager = manager
+                self.cachedDecoderLayers = nil
+                self.loadTask = nil
+                self.cacheLock.unlock()
+
+                if let previous, previous !== manager {
+                    Task { await previous.cleanup() }
+                }
+            }
+            return manager
+        }
+    }
+
+    /// `AsrManager` é um actor: ler `decoderLayerCount` a cada ditagem é um hop
+    /// desnecessário, já que o valor só muda quando o modelo é recarregado.
+    private func decoderLayerCount(of manager: AsrManager) async -> Int {
+        cacheLock.lock()
+        let cached = cachedDecoderLayers
+        cacheLock.unlock()
+        if let cached { return cached }
+
+        let layers = await manager.decoderLayerCount
+        cacheLock.lock()
+        cachedDecoderLayers = layers
+        cacheLock.unlock()
+        return layers
     }
 
     private static func mapLanguage(_ code: String) -> Language? {

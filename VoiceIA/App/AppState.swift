@@ -444,6 +444,7 @@ final class AppState {
     }
 
     private func finishDictationPipeline() async {
+        var trace = LatencyTrace("ditado")
         stopLevelPolling()
         stopDurationTicker()
 
@@ -452,49 +453,95 @@ final class AppState {
             recordingStartedAt = nil
         }
 
-        let message = await stopRecordingInternal(deleteAfterValidation: false)
-        lastHotkeyResultMessage = message
-        hotkeyService.resetHoldState()
+        let capture: StoppedCapture
+        do {
+            capture = try await audioRecorder.stopCapture()
+        } catch {
+            hotkeyService.resetHoldState()
+            recordingState = .error
+            lastHotkeyResultMessage = (error as? VoiceInputError)?.localizedDescription
+                ?? VoiceInputError.recordingFailed.localizedDescription
+            scheduleReturnToIdle(afterMilliseconds: 2_000)
+            return
+        }
+        trace.mark("captura")
 
-        guard recordingState != .error, let audioURL = lastRecordingURL else {
+        let audioURL = capture.fileURL
+        lastRecordingURL = audioURL
+        lastHotkeyResultMessage = String(format: "Áudio capturado: %.1f s.", capture.durationSeconds)
+        hotkeyService.resetHoldState()
+        // O `.m4a` ainda está sendo escrito; o diagnóstico chega quando terminar.
+        observeRecordingFinalization()
+
+        guard !capture.pcmSamples.isEmpty else {
+            recordingState = .error
+            lastHotkeyResultMessage = VoiceInputError.recordingFailed.localizedDescription
+            discardRecordingIfNeeded(audioURL)
             scheduleReturnToIdle(afterMilliseconds: 2_000)
             return
         }
 
-        // Gate novamente (modo teste, API ou modelo local).
-        settings.refreshAPIKeyStatus()
+        // Silêncio: decidido pela energia acumulada na captura, sem revarrer o
+        // PCM e sem pagar uma inferência inteira para não inserir nada.
+        //
+        // Só no caminho local: os limiares foram calibrados contra alucinação
+        // do Whisper, e o backend OpenAI nunca foi filtrado aqui.
+        if !transcriptionNeedsAudioFile,
+           !SpeechPresenceAnalyzer.hasSpeechEnergy(stats: capture.speechStats) {
+            logger.notice("Ditagem sem fala detectada; nada foi inserido.")
+            lastInsertionMessage = VoiceInputError.noSpeechDetected.localizedDescription
+            recordingState = .idle
+            discardRecordingIfNeeded(audioURL)
+            scheduleReturnToIdle(afterMilliseconds: 1_400)
+            return
+        }
+
+        // Gate novamente (modo teste, API ou modelo local). A releitura da chave
+        // é uma consulta ao Keychain (IPC com o securityd) e só interessa ao
+        // gate da OpenAI — no caminho local era latência pura.
+        if transcriptionNeedsAudioFile {
+            settings.refreshAPIKeyStatus()
+        }
+        trace.mark("chaves")
         if let gateError = dictationReadinessError() {
             recordingState = .error
             permissionDeniedMessage = gateError.localizedDescription
+            discardRecordingIfNeeded(audioURL)
             scheduleReturnToIdle(afterMilliseconds: 2_500)
             return
         }
 
         recordingState = .transcribing
+        trace.mark("gates")
 
-        let pcmSamples = audioRecorder.consumePCMSamples()
+        // Só o backend OpenAI lê o arquivo; aí sim vale esperar o encoder AAC.
+        if transcriptionNeedsAudioFile {
+            do {
+                _ = try await audioRecorder.finalizedRecording()
+            } catch {
+                recordingState = .error
+                lastInsertionMessage = (error as? VoiceInputError)?.localizedDescription
+                    ?? VoiceInputError.recordingFailed.localizedDescription
+                scheduleReturnToIdle(afterMilliseconds: 2_500)
+                return
+            }
+            trace.mark("arquivo")
+        }
+
         let transcribed: String
         do {
-            let asrStart = Date()
             transcribed = try await transcriptionService.transcribe(
                 audioURL: audioURL,
-                pcmSamples: pcmSamples
+                pcmSamples: capture.pcmSamples
             )
-            logger.notice(
-                "ASR concluiu em \(String(format: "%.0f", Date().timeIntervalSince(asrStart) * 1000)) ms."
-            )
+            trace.mark("asr")
             lastTranscriptionText = transcribed
         } catch let error as VoiceInputError where error == .noSpeechDetected {
             // Silêncio: não insere, não abre diálogo de resgate — só avisa de leve.
             logger.notice("Ditagem sem fala detectada; nada foi inserido.")
             lastInsertionMessage = error.localizedDescription
             recordingState = .idle
-            if !settings.keepRecordingsAfterTranscription {
-                try? audioRecorder.deleteRecording(at: audioURL)
-                if lastRecordingURL == audioURL {
-                    lastRecordingURL = nil
-                }
-            }
+            discardRecordingIfNeeded(audioURL)
             scheduleReturnToIdle(afterMilliseconds: 1_400)
             return
         } catch let error as VoiceInputError {
@@ -503,41 +550,73 @@ final class AppState {
             if error == .missingAPIKey || error == .localModelMissing {
                 permissionDeniedMessage = error.localizedDescription
             }
+            discardRecordingIfNeeded(audioURL)
             scheduleReturnToIdle(afterMilliseconds: 2_500)
             return
         } catch {
             recordingState = .error
             lastInsertionMessage = VoiceInputError.transcriptionFailed.localizedDescription
+            discardRecordingIfNeeded(audioURL)
             scheduleReturnToIdle(afterMilliseconds: 2_500)
             return
         }
 
-        recordTranscriptionHistoryIfNeeded(transcribed)
         await insertTranscribedText(transcribed)
+        trace.mark("inserção")
+        trace.summary()
 
-        if !settings.keepRecordingsAfterTranscription {
-            try? audioRecorder.deleteRecording(at: audioURL)
-            if lastRecordingURL == audioURL {
-                lastRecordingURL = nil
+        // Depois da inserção: o encode JSON do histórico cresce a cada ditagem e
+        // não pode ficar entre a transcrição pronta e o texto na tela.
+        recordTranscriptionHistoryIfNeeded(transcribed, durationSeconds: capture.durationSeconds)
+        discardRecordingIfNeeded(audioURL)
+    }
+
+    /// `true` quando a transcrição vai ler o `.m4a` em vez do PCM em memória.
+    private var transcriptionNeedsAudioFile: Bool {
+        guard !settings.isTestModeEnabled else { return false }
+        return settings.transcriptionBackend != "local"
+    }
+
+    /// Publica o diagnóstico da captura quando o `.m4a` termina de ser escrito.
+    private func observeRecordingFinalization() {
+        Task { [weak self] in
+            guard let self else { return }
+            _ = try? await self.audioRecorder.finalizedRecording()
+            let diagnostics = self.audioRecorder.lastDiagnostics
+            self.lastCaptureDiagnostics = diagnostics
+            self.lastRecordingByteCount = diagnostics.byteCount
+        }
+    }
+
+    /// Apaga a gravação quando o usuário não pediu para mantê-la.
+    ///
+    /// Espera o writer fechar o arquivo: apagar no meio da escrita deixaria o
+    /// `AVAssetWriter` falhando em background.
+    private func discardRecordingIfNeeded(_ audioURL: URL) {
+        guard !settings.keepRecordingsAfterTranscription else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            _ = try? await self.audioRecorder.finalizedRecording()
+            try? self.audioRecorder.deleteRecording(at: audioURL)
+            if self.lastRecordingURL == audioURL {
+                self.lastRecordingURL = nil
             }
         }
     }
 
     /// Salva no histórico local quando a captura está ligada e não é modo teste.
-    private func recordTranscriptionHistoryIfNeeded(_ text: String) {
+    private func recordTranscriptionHistoryIfNeeded(_ text: String, durationSeconds: Double) {
         guard settings.isTranscriptionHistoryEnabled else { return }
         guard !settings.isTestModeEnabled else { return }
         let duration = accumulatedRecordingDuration > 0
             ? accumulatedRecordingDuration
-            : lastCaptureDiagnostics?.durationSeconds
+            : durationSeconds
         historyStore.append(text: text, durationSeconds: duration)
     }
 
     private func insertTranscribedText(_ text: String) async {
         // Esconde o HUD antes de digitar (Electron/Cursor).
         recordingState = .idle
-        // Tempo extra: após Whisper local o Cursor precisa reassumir o foco AX.
-        try? await Task.sleep(for: .milliseconds(280))
 
         do {
             if let captured = capturedFocusedElement {

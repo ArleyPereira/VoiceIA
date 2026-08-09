@@ -30,7 +30,6 @@ final class TranscriptionHistoryStore {
 
     private let logger = Logger(subsystem: "dev.arley.santana.VoiceIA", category: "history")
     private let fileManager: FileManager
-    private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
     /// Entradas mais recentes primeiro.
@@ -38,11 +37,6 @@ final class TranscriptionHistoryStore {
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        self.encoder = encoder
-
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         self.decoder = decoder
@@ -103,12 +97,29 @@ final class TranscriptionHistoryStore {
         }
     }
 
+    /// Grava fora do MainActor, numa fila serial.
+    ///
+    /// O JSON é do histórico **inteiro** e cresce a cada ditagem; feito de forma
+    /// síncrona aqui, o custo entrava direto na latência entre a transcrição
+    /// ficar pronta e o texto aparecer no campo. A fila serial garante que a
+    /// última gravação enfileirada é a que fica no disco.
     private func persist() {
-        do {
-            let data = try encoder.encode(entries)
-            try data.write(to: fileURL, options: [.atomic])
-        } catch {
-            logger.error("Falha ao salvar histórico: \(error.localizedDescription, privacy: .public)")
+        let snapshot = entries
+        let url = fileURL
+        let logger = self.logger
+
+        Self.ioQueue.async {
+            do {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                encoder.dateEncodingStrategy = .iso8601
+                let data = try encoder.encode(snapshot)
+                try data.write(to: url, options: [.atomic])
+            } catch {
+                logger.error("Falha ao salvar histórico: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
+
+    private static let ioQueue = DispatchQueue(label: "dev.arley.santana.VoiceIA.history.io")
 }

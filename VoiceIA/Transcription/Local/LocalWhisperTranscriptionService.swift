@@ -118,15 +118,18 @@ final class CompositeTranscriptionService: TranscriptionService, @unchecked Send
     }
 
     func transcribe(audioURL: URL, pcmSamples: [Float]? = nil) async throws -> String {
-        let testMode = await MainActor.run { settings.isTestModeEnabled }
+        // Um hop só: três `MainActor.run` em série no caminho crítico eram três
+        // idas e voltas de scheduler para ler três flags.
+        let (testMode, backend, modelID) = await MainActor.run {
+            (settings.isTestModeEnabled, settings.transcriptionBackend, settings.selectedLocalWhisperModel)
+        }
+
         if testMode {
             // Mantém o mock no serviço OpenAI (sem rede).
             return try await openAI.transcribe(audioURL: audioURL, pcmSamples: nil)
         }
 
-        let backend = await MainActor.run { settings.transcriptionBackend }
         if backend == "local" {
-            let modelID = await MainActor.run { settings.selectedLocalWhisperModel }
             let model = LocalTranscriptionModel(rawValue: modelID) ?? .default
             switch model.engine {
             case .whisper:
