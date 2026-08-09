@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Conteúdo da sub-aba Local: Whisper, Parakeet, GPU, download e exclusão.
+/// Conteúdo da sub-aba Local: backend, Whisper/Parakeet, download e exclusão.
 struct LocalModelsSettingsView: View {
     @Bindable var viewModel: SettingsViewModel
     @State private var showMissingModelAlert = false
@@ -8,92 +8,21 @@ struct LocalModelsSettingsView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            summaryCard
             backendCard
-            gpuCard
             modelsList
             footerBar
         }
         .onAppear {
             viewModel.refreshLocalModelDiskState()
+            // GPU permanece ligada por padrão (sem toggle na UI).
+            if !viewModel.useLocalWhisperGPU {
+                viewModel.useLocalWhisperGPU = true
+            }
         }
         .alert("Modelo local necessário", isPresented: $showMissingModelAlert) {
             Button("Entendi", role: .cancel) {}
         } message: {
             Text("Baixe pelo menos um modelo local (Whisper ou Parakeet) antes de ativar “Usar no ditado”. Enquanto isso, o atalho continua com a API OpenAI ou o modo teste.")
-        }
-    }
-
-    // MARK: - Resumo
-
-    private var summaryCard: some View {
-        SettingsCard {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top) {
-                    HStack(spacing: 10) {
-                        Image(systemName: "mic.fill")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(SettingsTheme.accent)
-                            .frame(width: 28, height: 28)
-                            .background(Circle().fill(.white.opacity(0.08)))
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Transcrição local")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(.white)
-                            Text("Converta fala em texto neste Mac. Whisper prioriza precisão; Parakeet prioriza velocidade.")
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(.white.opacity(0.55))
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-
-                    Spacer(minLength: 8)
-
-                    StatusPill(
-                        text: viewModel.localStatusBadge,
-                        isPositive: viewModel.localStatusIsReady
-                    )
-                }
-
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(), spacing: 12),
-                        GridItem(.flexible(), spacing: 12),
-                        GridItem(.flexible(), spacing: 12),
-                        GridItem(.flexible(), spacing: 12)
-                    ],
-                    spacing: 12
-                ) {
-                    summaryCell(title: "SELECIONADO", value: viewModel.selectedLocalModelDisplayName)
-                    summaryCell(title: "GPU", value: viewModel.gpuStatusLabel)
-                    summaryCell(
-                        title: "BAIXADOS",
-                        value: "\(viewModel.localModelStore.downloadedCount + (viewModel.parakeetModelStore.isDownloaded ? 1 : 0))"
-                    )
-                    summaryCell(title: "ARMAZENAMENTO", value: viewModel.storageSummaryLabel)
-                }
-            }
-        }
-    }
-
-    private func summaryCell(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.4))
-                .tracking(0.4)
-            Text(value)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.9))
-                .lineLimit(2)
-                .minimumScaleFactor(0.85)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(SettingsTheme.cardFill(colorScheme))
         }
     }
 
@@ -122,22 +51,6 @@ struct LocalModelsSettingsView: View {
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .tint(SettingsTheme.accent)
-            }
-        }
-    }
-
-    // MARK: - GPU
-
-    private var gpuCard: some View {
-        SettingsCard {
-            SettingsRow(
-                title: "Usar aceleração GPU",
-                description: "Whisper usa Metal. O Parakeet fica no Neural Engine (como o Spokenly) — mais leve em RAM e ainda rápido no ditado."
-            ) {
-                Toggle("", isOn: $viewModel.useLocalWhisperGPU)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .tint(SettingsTheme.accent)
             }
         }
     }
