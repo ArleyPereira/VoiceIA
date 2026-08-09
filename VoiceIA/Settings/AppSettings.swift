@@ -14,6 +14,7 @@ final class AppSettings {
         static let transcriptionBackend = "settings.transcriptionBackend"
         static let appearanceTheme = "settings.appearanceTheme"
         static let isTranscriptionHistoryEnabled = "settings.isTranscriptionHistoryEnabled"
+        static let recordingHUDStyle = "settings.recordingHUDStyle"
     }
 
     private let apiKeyStore: any APIKeyProvider
@@ -76,6 +77,13 @@ final class AppSettings {
         }
     }
 
+    /// Estilo da barra flutuante de gravação (`moderno` / `classico`).
+    var recordingHUDStyle: String {
+        didSet {
+            defaults.set(recordingHUDStyle, forKey: DefaultsKey.recordingHUDStyle)
+        }
+    }
+
     /// Indica se existe API key salva no Keychain (sem expor o valor).
     private(set) var hasAPIKey: Bool
 
@@ -122,6 +130,13 @@ final class AppSettings {
             self.isTranscriptionHistoryEnabled = true
         } else {
             self.isTranscriptionHistoryEnabled = defaults.bool(forKey: DefaultsKey.isTranscriptionHistoryEnabled)
+        }
+
+        let storedHUD = defaults.string(forKey: DefaultsKey.recordingHUDStyle)
+        if let storedHUD, RecordingHUDStyle(rawValue: storedHUD) != nil {
+            self.recordingHUDStyle = storedHUD
+        } else {
+            self.recordingHUDStyle = RecordingHUDStyle.moderno.rawValue
         }
 
         self.hasAPIKey = apiKeyStore.hasAPIKey

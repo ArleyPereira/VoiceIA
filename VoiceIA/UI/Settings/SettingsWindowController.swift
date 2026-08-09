@@ -16,10 +16,12 @@ final class SettingsWindowController {
     ///
     /// - Parameter onTranscriptionPolicyChanged: chamado quando modo teste,
     ///   backend local, modelo ou GPU mudam — para liberar o Whisper da memória.
+    /// - Parameter onRecordingHUDStyleChanged: reaplica a barra flutuante na hora.
     func show(
         settings: AppSettings,
         historyStore: TranscriptionHistoryStore = .shared,
-        onTranscriptionPolicyChanged: @escaping () -> Void = {}
+        onTranscriptionPolicyChanged: @escaping () -> Void = {},
+        onRecordingHUDStyleChanged: @escaping () -> Void = {}
     ) {
         self.settings = settings
         settings.refreshAPIKeyStatus()
@@ -31,12 +33,14 @@ final class SettingsWindowController {
         if let viewModel {
             viewModel.onTranscriptionPolicyChanged = onTranscriptionPolicyChanged
             viewModel.onAppearanceThemeChanged = applyTheme
+            viewModel.onRecordingHUDStyleChanged = onRecordingHUDStyleChanged
         } else {
             let viewModel = SettingsViewModel(
                 settings: settings,
                 historyStore: historyStore,
                 onTranscriptionPolicyChanged: onTranscriptionPolicyChanged,
-                onAppearanceThemeChanged: applyTheme
+                onAppearanceThemeChanged: applyTheme,
+                onRecordingHUDStyleChanged: onRecordingHUDStyleChanged
             )
             self.viewModel = viewModel
             let root = SettingsView(viewModel: viewModel)

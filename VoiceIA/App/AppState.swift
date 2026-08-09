@@ -84,10 +84,15 @@ final class AppState {
     func openSettingsWindow() {
         settingsWindowController.show(
             settings: settings,
-            historyStore: historyStore
-        ) { [weak self] in
-            self?.releaseLocalWhisperResources()
-        }
+            historyStore: historyStore,
+            onTranscriptionPolicyChanged: { [weak self] in
+                self?.releaseLocalWhisperResources()
+            },
+            onRecordingHUDStyleChanged: { [weak self] in
+                guard let self else { return }
+                self.overlayController.sync(with: self)
+            }
+        )
     }
 
     /// Libera o Whisper local da RAM/GPU quando o ditado não vai usá-lo.

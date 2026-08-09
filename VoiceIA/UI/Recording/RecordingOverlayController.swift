@@ -14,6 +14,12 @@ final class RecordingOverlayController {
     func sync(with appState: AppState) {
         self.appState = appState
 
+        let style = RecordingHUDStyle(rawValue: appState.settings.recordingHUDStyle) ?? .moderno
+        guard style.showsFloatingBar else {
+            hide()
+            return
+        }
+
         switch appState.recordingState {
         case .recording, .paused, .error:
             show(using: appState)

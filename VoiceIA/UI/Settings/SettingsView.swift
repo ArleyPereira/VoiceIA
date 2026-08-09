@@ -4,6 +4,7 @@ import SwiftUI
 /// Abas da janela de configurações.
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
+    case appearance
     case models
     case transcription
     case history
@@ -14,6 +15,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .general: return "Geral"
+        case .appearance: return "Aparência"
         case .models: return "Modelos"
         case .transcription: return "Transcrição"
         case .history: return "Histórico"
@@ -24,6 +26,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .general: return "slider.horizontal.3"
+        case .appearance: return "paintpalette.fill"
         case .models: return "sparkles"
         case .transcription: return "waveform"
         case .history: return "clock.arrow.circlepath"
@@ -33,7 +36,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 
     var subtitle: String {
         switch self {
-        case .general: return "Atalho de ditado e permissões do macOS."
+        case .general: return "Início automático, atalho e permissões do macOS."
+        case .appearance: return "Tema da interface e visual da barra de gravação."
         case .models: return "API OpenAI e modelos locais Whisper."
         case .transcription: return "Idioma e modelo usados no ditado."
         case .history: return "Transcrições salvas neste Mac."
@@ -164,6 +168,8 @@ struct SettingsView: View {
                 switch selectedTab {
                 case .general:
                     generalTab
+                case .appearance:
+                    appearanceTab
                 case .models:
                     modelsTab
                 case .transcription:
@@ -210,26 +216,6 @@ struct SettingsView: View {
                             .foregroundStyle(Color(red: 1.00, green: 0.70, blue: 0.35))
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                }
-            }
-
-            SettingsCard {
-                HStack(alignment: .top, spacing: 16) {
-                    Text("Aparência")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(SettingsTheme.primaryLabel(colorScheme))
-                        // Compensa a altura visual da miniatura para alinhar o topo do texto
-                        // com o topo das opções (baseline óptica da primeira linha).
-                        .padding(.top, 2)
-
-                    Spacer(minLength: 12)
-
-                    AppearanceThemePicker(
-                        selection: Binding(
-                            get: { viewModel.appearanceTheme },
-                            set: { viewModel.appearanceTheme = $0 }
-                        )
-                    )
                 }
             }
 
@@ -285,6 +271,36 @@ struct SettingsView: View {
                         .buttonStyle(GhostButtonStyle())
                     }
                 }
+            }
+        }
+    }
+
+    // MARK: - Aba Aparência
+
+    private var appearanceTab: some View {
+        VStack(spacing: 16) {
+            SettingsCard(
+                title: "Tema",
+                subtitle: "Aparência da janela de configurações: sistema, claro ou escuro."
+            ) {
+                AppearanceThemePicker(
+                    selection: Binding(
+                        get: { viewModel.appearanceTheme },
+                        set: { viewModel.appearanceTheme = $0 }
+                    )
+                )
+            }
+
+            SettingsCard(
+                title: "Barra de gravação",
+                subtitle: "Visual da barra flutuante com o waveform durante o ditado."
+            ) {
+                RecordingHUDStylePicker(
+                    selection: Binding(
+                        get: { viewModel.recordingHUDStyle },
+                        set: { viewModel.recordingHUDStyle = $0 }
+                    )
+                )
             }
         }
     }

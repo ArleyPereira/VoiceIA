@@ -61,6 +61,9 @@ final class SettingsViewModel {
     /// Notifica a janela para aplicar Sistema / Claro / Escuro.
     var onAppearanceThemeChanged: () -> Void
 
+    /// Notifica o AppState para mostrar/esconder a barra conforme o estilo.
+    var onRecordingHUDStyleChanged: () -> Void
+
     /// Incrementado quando o macOS muda claro/escuro — força o SwiftUI a
     /// reler `resolvedColorScheme` com a preferência em “Sistema”.
     private(set) var systemAppearanceEpoch = 0
@@ -92,13 +95,15 @@ final class SettingsViewModel {
         localModelStore: LocalWhisperModelStore? = nil,
         historyStore: TranscriptionHistoryStore? = nil,
         onTranscriptionPolicyChanged: @escaping () -> Void = {},
-        onAppearanceThemeChanged: @escaping () -> Void = {}
+        onAppearanceThemeChanged: @escaping () -> Void = {},
+        onRecordingHUDStyleChanged: @escaping () -> Void = {}
     ) {
         self.settings = settings
         self.localModelStore = localModelStore ?? .shared
         self.historyStore = historyStore ?? .shared
         self.onTranscriptionPolicyChanged = onTranscriptionPolicyChanged
         self.onAppearanceThemeChanged = onAppearanceThemeChanged
+        self.onRecordingHUDStyleChanged = onRecordingHUDStyleChanged
         settings.refreshAPIKeyStatus()
         refreshPermissions()
         self.localModelStore.refreshDiskState()
@@ -115,6 +120,16 @@ final class SettingsViewModel {
             guard settings.appearanceTheme != newValue.rawValue else { return }
             settings.appearanceTheme = newValue.rawValue
             onAppearanceThemeChanged()
+        }
+    }
+
+    /// Estilo da barra flutuante (Moderno / Clássico / Nenhuma).
+    var recordingHUDStyle: RecordingHUDStyle {
+        get { RecordingHUDStyle(rawValue: settings.recordingHUDStyle) ?? .moderno }
+        set {
+            guard settings.recordingHUDStyle != newValue.rawValue else { return }
+            settings.recordingHUDStyle = newValue.rawValue
+            onRecordingHUDStyleChanged()
         }
     }
 

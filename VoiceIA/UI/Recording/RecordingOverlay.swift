@@ -1,8 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// HUD de gravação: waveform, duração e pause/continua,
-/// com borda em gradiente que circula conforme a voz.
+/// HUD de gravação: waveform, duração e pause/continua.
+///
+/// Estilos: **Moderno** (vidro + glow) ou **Clássico** (fundo preto sólido).
 struct RecordingOverlay: View {
     @Bindable var appState: AppState
     @State private var glow = OverlayGlowDriver()
@@ -18,6 +19,12 @@ struct RecordingOverlay: View {
         Color(red: 0.30, green: 0.85, blue: 1.00)
     ]
 
+    private var hudStyle: RecordingHUDStyle {
+        RecordingHUDStyle(rawValue: appState.settings.recordingHUDStyle) ?? .moderno
+    }
+
+    private var isClassic: Bool { hudStyle == .classico }
+
     var body: some View {
         Group {
             if isCapturing {
@@ -30,15 +37,16 @@ struct RecordingOverlay: View {
         .onAppear { syncGlowDriver() }
         .onDisappear { glow.stop() }
         .onChange(of: appState.recordingState) { _, _ in syncGlowDriver() }
+        .onChange(of: appState.settings.recordingHUDStyle) { _, _ in syncGlowDriver() }
     }
 
     private var isCapturing: Bool {
         appState.recordingState == .recording || appState.recordingState == .paused
     }
 
-    /// Mantém a animação só enquanto o HUD de captura está à mostra.
+    /// Mantém a animação só no estilo moderno, enquanto o HUD de captura está à mostra.
     private func syncGlowDriver() {
-        if isCapturing {
+        if isCapturing, !isClassic {
             glow.start()
         } else {
             glow.stop()
@@ -61,16 +69,8 @@ struct RecordingOverlay: View {
         }
         .padding(.horizontal, 14)
         .frame(width: Self.barSize.width, height: Self.barSize.height)
-        .background {
-            ZStack {
-                // Só o fundo: blur do conteúdo atrás da janela + tint escuro.
-                FrostedBackground()
-                Capsule().fill(barFill.opacity(0.55))
-                innerGlow
-            }
-            .clipShape(Capsule())
-        }
-        .overlay { animatedBorder }
+        .background { barBackground }
+        .overlay { barBorder }
     }
 
     private var pauseButton: some View {
@@ -87,11 +87,37 @@ struct RecordingOverlay: View {
                 .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(.white)
                 .frame(width: 28, height: 28)
-                .background(Circle().fill(Color.white.opacity(0.16)))
-                .overlay(Circle().strokeBorder(.white.opacity(0.14), lineWidth: 1))
+                .background(Circle().fill(Color.white.opacity(isClassic ? 0.12 : 0.16)))
+                .overlay(Circle().strokeBorder(.white.opacity(isClassic ? 0.10 : 0.14), lineWidth: 1))
         }
         .buttonStyle(.plain)
         .help(appState.recordingState == .paused ? "Continuar" : "Pausar")
+    }
+
+    @ViewBuilder
+    private var barBackground: some View {
+        if isClassic {
+            Capsule()
+                .fill(Color.black.opacity(0.92))
+        } else {
+            ZStack {
+                FrostedBackground()
+                Capsule().fill(barFill.opacity(0.55))
+                innerGlow
+            }
+            .clipShape(Capsule())
+        }
+    }
+
+    @ViewBuilder
+    private var barBorder: some View {
+        if isClassic {
+            Capsule()
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                .allowsHitTesting(false)
+        } else {
+            animatedBorder
+        }
     }
 
     /// Manchas coloridas desfocadas que passeiam por dentro da cápsula.
@@ -150,14 +176,18 @@ struct RecordingOverlay: View {
         .padding(.horizontal, 18)
         .frame(width: 220, height: Self.barSize.height)
         .background {
-            ZStack {
-                FrostedBackground()
-                Capsule().fill(barFill.opacity(0.55))
+            if isClassic {
+                Capsule().fill(Color.black.opacity(0.92))
+            } else {
+                ZStack {
+                    FrostedBackground()
+                    Capsule().fill(barFill.opacity(0.55))
+                }
+                .clipShape(Capsule())
             }
-            .clipShape(Capsule())
         }
         .overlay {
-            Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1)
+            Capsule().strokeBorder(.white.opacity(isClassic ? 0.10 : 0.12), lineWidth: 1)
         }
     }
 
