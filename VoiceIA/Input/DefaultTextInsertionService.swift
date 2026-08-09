@@ -526,6 +526,9 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         let snapshot = ClipboardSnapshot.capture(from: pasteboard)
 
         pasteboard.clearContents()
+        // A marca vem antes do texto: um gerenciador que leia o clipboard entre
+        // as duas escritas veria a ditagem sem saber que é de passagem.
+        pasteboard.setData(Data(), forType: .transient)
         guard pasteboard.setString(text, forType: .string) else {
             snapshot.restore(into: pasteboard)
             return .rejected
