@@ -187,6 +187,33 @@ struct SettingsView: View {
     private var generalTab: some View {
         VStack(spacing: 16) {
             SettingsCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    SettingsRow(
+                        title: "Abrir ao iniciar o Mac",
+                        description: "Coloca o VoiceIA nos itens de início do sistema."
+                    ) {
+                        Toggle(
+                            "",
+                            isOn: Binding(
+                                get: { viewModel.opensAtLogin },
+                                set: { viewModel.setOpensAtLogin($0) }
+                            )
+                        )
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .tint(SettingsTheme.accent)
+                    }
+
+                    if let hint = viewModel.launchAtLoginHint {
+                        Text(hint)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Color(red: 1.00, green: 0.70, blue: 0.35))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+
+            SettingsCard {
                 HStack(alignment: .top, spacing: 16) {
                     Text("Aparência")
                         .font(.system(size: 13, weight: .semibold))

@@ -78,6 +78,12 @@ final class SettingsViewModel {
     private(set) var isAccessibilityTrusted = false
     private(set) var isMicrophoneAuthorized = false
 
+    /// Espelho de `SMAppService` — o VoiceIA abre no login do macOS.
+    var opensAtLogin = false
+
+    /// Aviso quando o macOS pede aprovação ou o app não está em Aplicativos.
+    private(set) var launchAtLoginHint: String?
+
     /// Sub-aba ativa em Modelos.
     var selectedModelsPane: ModelsPane = .api
 
@@ -315,6 +321,24 @@ final class SettingsViewModel {
     func refreshPermissions() {
         isAccessibilityTrusted = AccessibilityPermission.isTrusted
         isMicrophoneAuthorized = MicrophonePermission.isAuthorized
+        refreshLaunchAtLogin()
+    }
+
+    /// Relê o status de início no login junto ao sistema.
+    func refreshLaunchAtLogin() {
+        opensAtLogin = LaunchAtLoginService.isEnabled
+        launchAtLoginHint = LaunchAtLoginService.statusHint
+    }
+
+    /// Liga ou desliga a abertura automática no login.
+    func setOpensAtLogin(_ enabled: Bool) {
+        do {
+            try LaunchAtLoginService.setEnabled(enabled)
+            launchAtLoginHint = nil
+        } catch {
+            launchAtLoginHint = error.localizedDescription
+        }
+        refreshLaunchAtLogin()
     }
 
     /// Pendente: pede confiança e abre Ajustes. Já autorizada: só abre Ajustes.
