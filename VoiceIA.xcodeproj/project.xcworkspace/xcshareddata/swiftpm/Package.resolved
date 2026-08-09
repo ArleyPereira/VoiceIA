@@ -1,0 +1,15 @@
+{
+  "originHash" : "7aaa9d686d3f09baba00b5090c4d1b84c0ce0a26479dda1183f8e6cb0a14091d",
+  "pins" : [
+    {
+      "identity" : "whispermetalkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/carloshpdoc/WhisperMetalKit.git",
+      "state" : {
+        "revision" : "f59f8b6d9cf6d31e86a61d5393fd6f396c890d45",
+        "version" : "0.1.0"
+      }
+    }
+  ],
+  "version" : 3
+}
