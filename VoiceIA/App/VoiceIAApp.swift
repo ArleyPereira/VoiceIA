@@ -25,6 +25,8 @@ struct VoiceIAApp: App {
             return "VoiceIA — Concluído"
         case .error:
             return "VoiceIA — Erro"
+        case .awaitingManualInsert:
+            return "VoiceIA — Arraste ou copie o texto"
         default:
             return "VoiceIA — \(hotkey.holdInstruction)"
         }

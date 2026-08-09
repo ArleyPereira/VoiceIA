@@ -2,19 +2,27 @@ import AppKit
 import SwiftUI
 
 /// Controla o painel flutuante de feedback sem roubar o foco do app ativo.
-/// Posição fixa (centro inferior). Recebe cliques só para pause/stop.
+/// Posição fixa (centro inferior). Recebe cliques para pause e barra de resgate.
 @MainActor
 final class RecordingOverlayController {
-    private var panel: NSPanel?
-    private var hostingView: NSHostingView<RecordingOverlay>?
+    private var panel: OverlayPanel?
+    private var hostingView: OverlayHostingView<RecordingOverlay>?
     private var appState: AppState?
-
-    private let contentSize = NSSize(width: 300, height: 52)
+    private var currentSize: CGSize = RecordingOverlay.recordingBarSize
 
     func sync(with appState: AppState) {
         self.appState = appState
 
         let style = RecordingHUDStyle(rawValue: appState.settings.recordingHUDStyle) ?? .moderno
+        let isRescue = appState.recordingState == .awaitingManualInsert
+            && !(appState.pendingDictationText ?? "").isEmpty
+
+        // Resgate sempre aparece — mesmo com HUD “Nenhuma”.
+        if isRescue {
+            show(using: appState, size: RecordingOverlay.rescueBarSize, cornerRadius: 18)
+            return
+        }
+
         guard style.showsFloatingBar else {
             hide()
             return
@@ -22,43 +30,47 @@ final class RecordingOverlayController {
 
         switch appState.recordingState {
         case .recording, .paused, .error:
-            show(using: appState)
-        case .idle, .transcribing, .inserting, .success:
+            show(using: appState, size: RecordingOverlay.recordingBarSize, cornerRadius: RecordingOverlay.recordingBarSize.height / 2)
+        case .idle, .transcribing, .inserting, .success, .awaitingManualInsert:
             hide()
         }
     }
 
-    private func show(using appState: AppState) {
+    private func show(using appState: AppState, size: CGSize, cornerRadius: CGFloat) {
+        currentSize = size
+
         if panel == nil {
-            let built = makePanel(appState: appState)
+            let built = makePanel(appState: appState, size: size)
             panel = built.panel
             hostingView = built.hosting
         } else if let hostingView {
             hostingView.rootView = RecordingOverlay(appState: appState)
+            hostingView.frame = NSRect(origin: .zero, size: size)
         }
 
         guard let panel else { return }
-        panel.setContentSize(contentSize)
-        applyCapsuleMask(to: panel)
-        // Precisa de mouse para pause/stop; não ativa o app.
+        panel.setContentSize(size)
+        applyMask(to: panel, cornerRadius: cornerRadius)
         panel.ignoresMouseEvents = false
-        placeFixed(panel)
+        placeFixed(panel, size: size)
         panel.alphaValue = 1
         panel.orderFrontRegardless()
+        // Precisa ser key para o arraste AppKit receber mouseDown com confiabilidade.
+        panel.makeKey()
     }
 
     private func hide() {
         panel?.orderOut(nil)
     }
 
-    private func makePanel(appState: AppState) -> (panel: NSPanel, hosting: NSHostingView<RecordingOverlay>) {
-        let hostingView = NSHostingView(rootView: RecordingOverlay(appState: appState))
-        hostingView.frame = NSRect(origin: .zero, size: contentSize)
+    private func makePanel(appState: AppState, size: CGSize) -> (panel: OverlayPanel, hosting: OverlayHostingView<RecordingOverlay>) {
+        let hostingView = OverlayHostingView(rootView: RecordingOverlay(appState: appState))
+        hostingView.frame = NSRect(origin: .zero, size: size)
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
 
-        let panel = NSPanel(
-            contentRect: NSRect(origin: .zero, size: contentSize),
+        let panel = OverlayPanel(
+            contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -69,33 +81,43 @@ final class RecordingOverlayController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        // Sem sombra do sistema: ela aparece como borda preta fora da cápsula.
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
-        panel.becomesKeyOnlyIfNeeded = true
+        panel.becomesKeyOnlyIfNeeded = false
         panel.ignoresMouseEvents = false
         panel.isMovable = false
         panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
-        applyCapsuleMask(to: panel)
+        applyMask(to: panel, cornerRadius: size.height / 2)
 
         return (panel, hostingView)
     }
 
-    private func applyCapsuleMask(to panel: NSPanel) {
+    private func applyMask(to panel: OverlayPanel, cornerRadius: CGFloat) {
         guard let content = panel.contentView else { return }
         content.wantsLayer = true
         content.layer?.backgroundColor = NSColor.clear.cgColor
-        content.layer?.cornerRadius = contentSize.height / 2
+        content.layer?.cornerRadius = cornerRadius
         content.layer?.masksToBounds = true
         content.layer?.isOpaque = false
     }
 
-    private func placeFixed(_ panel: NSPanel) {
+    private func placeFixed(_ panel: OverlayPanel, size: CGSize) {
         guard let screen = NSScreen.main else { return }
         let visible = screen.visibleFrame
-        let x = visible.midX - contentSize.width / 2
+        let x = visible.midX - size.width / 2
         let y = visible.minY + 36
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        panel.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
     }
+}
+
+/// Painel flutuante que pode ser key sem virar main (necessário para arrastar texto).
+private final class OverlayPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+/// Hosting que aceita o primeiro clique sem exigir ativar o app antes.
+private final class OverlayHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }

@@ -2,13 +2,16 @@ import AppKit
 import SwiftUI
 
 /// HUD de gravação: waveform, duração e pause/continua.
+/// Também exibe a barra de resgate (estilo Spokenly) quando a inserção falha.
 ///
 /// Estilos: **Moderno** (vidro + glow) ou **Clássico** (fundo preto sólido).
 struct RecordingOverlay: View {
     @Bindable var appState: AppState
     @State private var glow = OverlayGlowDriver()
+    @State private var didCopyFeedback = false
 
-    private static let barSize = CGSize(width: 300, height: 52)
+    static let recordingBarSize = CGSize(width: 300, height: 52)
+    static let rescueBarSize = CGSize(width: 360, height: 78)
 
     /// Cores do gradiente giratório (a primeira repete no fim para fechar o ciclo).
     private static let glowColors: [Color] = [
@@ -25,15 +28,21 @@ struct RecordingOverlay: View {
 
     private var isClassic: Bool { hudStyle == .classico }
 
+    private var isRescue: Bool {
+        appState.recordingState == .awaitingManualInsert
+            && !(appState.pendingDictationText ?? "").isEmpty
+    }
+
     var body: some View {
         Group {
-            if isCapturing {
+            if isRescue {
+                rescueBar
+            } else if isCapturing {
                 recordingBar
             } else {
                 statusBar
             }
         }
-        .frame(width: Self.barSize.width, height: Self.barSize.height)
         .onAppear { syncGlowDriver() }
         .onDisappear { glow.stop() }
         .onChange(of: appState.recordingState) { _, _ in syncGlowDriver() }
@@ -46,12 +55,114 @@ struct RecordingOverlay: View {
 
     /// Mantém a animação só no estilo moderno, enquanto o HUD de captura está à mostra.
     private func syncGlowDriver() {
-        if isCapturing, !isClassic {
+        if isCapturing, !isClassic, !isRescue {
             glow.start()
         } else {
             glow.stop()
         }
     }
+
+    // MARK: - Resgate (Spokenly-like)
+
+    private var rescueBar: some View {
+        let text = appState.pendingDictationText ?? ""
+
+        return ZStack(alignment: .topTrailing) {
+            // Área inteira arrastável (exceto os botões acima).
+            DictationTextDragSource(text: text) {
+                appState.dismissPendingDictation()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .help("Arraste para um campo de texto")
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "hand.point.up.left.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.55))
+
+                    Text("Arraste para um campo de texto")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .lineLimit(1)
+
+                    Spacer(minLength: 48)
+                }
+                .allowsHitTesting(false)
+
+                Text(text)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .allowsHitTesting(false)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .allowsHitTesting(false)
+
+            HStack(spacing: 4) {
+                Button(action: copyPendingText) {
+                    Image(systemName: didCopyFeedback ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(didCopyFeedback ? Color(red: 0.45, green: 0.92, blue: 0.62) : .white.opacity(0.78))
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(didCopyFeedback ? "Copiado" : "Copiar")
+
+                Button {
+                    appState.dismissPendingDictation()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Fechar")
+            }
+            .padding(.top, 10)
+            .padding(.trailing, 12)
+        }
+        .frame(width: Self.rescueBarSize.width, height: Self.rescueBarSize.height)
+        .background { rescueBackground }
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(.white.opacity(isClassic ? 0.08 : 0.10), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var rescueBackground: some View {
+        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        if isClassic {
+            shape.fill(Color.black.opacity(0.52))
+        } else {
+            ZStack {
+                FrostedBackground(material: .hudWindow)
+                shape.fill(barFill.opacity(0.28))
+            }
+            .clipShape(shape)
+        }
+    }
+
+    private func copyPendingText() {
+        appState.copyPendingDictation()
+        didCopyFeedback = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1_400))
+            didCopyFeedback = false
+        }
+    }
+
+    // MARK: - Gravação
 
     private var recordingBar: some View {
         HStack(spacing: 10) {
@@ -68,7 +179,7 @@ struct RecordingOverlay: View {
             pauseButton
         }
         .padding(.horizontal, 14)
-        .frame(width: Self.barSize.width, height: Self.barSize.height)
+        .frame(width: Self.recordingBarSize.width, height: Self.recordingBarSize.height)
         .background { barBackground }
         .overlay { barBorder }
     }
@@ -134,7 +245,7 @@ struct RecordingOverlay: View {
 
     private func glowBlob(color: Color, angleOffset: Double) -> some View {
         let radians = (glow.phase + angleOffset) * .pi / 180
-        let horizontalReach = Self.barSize.width * 0.36
+        let horizontalReach = Self.recordingBarSize.width * 0.36
 
         return Circle()
             .fill(color)
@@ -174,7 +285,7 @@ struct RecordingOverlay: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 18)
-        .frame(width: 220, height: Self.barSize.height)
+        .frame(width: 220, height: Self.recordingBarSize.height)
         .background {
             if isClassic {
                 Capsule().fill(Color.black.opacity(0.92))
@@ -233,6 +344,8 @@ struct RecordingOverlay: View {
             return "Transcrevendo…"
         case .inserting:
             return "Inserindo…"
+        case .awaitingManualInsert:
+            return "Texto pronto"
         default:
             return ""
         }
@@ -241,9 +354,11 @@ struct RecordingOverlay: View {
 
 /// Blur translúcido do que está atrás do painel (não afeta texto/waveform).
 private struct FrostedBackground: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .hudWindow
+
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
-        view.material = .hudWindow
+        view.material = material
         view.blendingMode = .behindWindow
         view.state = .active
         view.isEmphasized = true
@@ -253,6 +368,164 @@ private struct FrostedBackground: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
         nsView.state = .active
+    }
+}
+
+/// Fonte de arraste AppKit para soltar texto em campos de outros apps.
+private struct DictationTextDragSource: NSViewRepresentable {
+    let text: String
+    var onSuccessfulDrop: () -> Void
+
+    func makeNSView(context: Context) -> DictationTextDragNSView {
+        let view = DictationTextDragNSView()
+        view.text = text
+        view.onSuccessfulDrop = onSuccessfulDrop
+        return view
+    }
+
+    func updateNSView(_ nsView: DictationTextDragNSView, context: Context) {
+        nsView.text = text
+        nsView.onSuccessfulDrop = onSuccessfulDrop
+    }
+}
+
+private final class DictationTextDragNSView: NSView, NSDraggingSource {
+    var text: String = ""
+    var onSuccessfulDrop: (() -> Void)?
+    private var pendingDropCompletion: (() -> Void)?
+
+    override var isOpaque: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Só captura eventos se houver texto para arrastar.
+        guard !text.isEmpty, bounds.contains(point) else { return nil }
+        return self
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        guard !text.isEmpty else { return }
+
+        // Mantém o callback vivo até o fim do arraste (o view pode ser atualizado no meio).
+        pendingDropCompletion = onSuccessfulDrop
+
+        let pasteboardItem = NSPasteboardItem()
+        pasteboardItem.setString(text, forType: .string)
+
+        let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
+        let preview = makeDragPreviewImage()
+        let mouse = convert(event.locationInWindow, from: nil)
+        let previewSize = preview.size
+        // Centraliza a bolha sob o cursor (estilo Spokenly).
+        let dragFrame = NSRect(
+            x: mouse.x - previewSize.width * 0.45,
+            y: mouse.y - previewSize.height * 0.55,
+            width: previewSize.width,
+            height: previewSize.height
+        )
+        draggingItem.setDraggingFrame(dragFrame, contents: preview)
+
+        beginDraggingSession(with: [draggingItem], event: event, source: self)
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        .copy
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        let completion = pendingDropCompletion
+        pendingDropCompletion = nil
+
+        // Electron/Cursor etc. costumam aceitar o drop mas reportar `.none`.
+        // Se soltou fora da barra, consideramos entrega (ou abandono) e fechamos.
+        let acceptedByDestination = !operation.isEmpty
+        let releasedOutsideBar: Bool = {
+            guard let window else { return true }
+            return !window.frame.insetBy(dx: -4, dy: -4).contains(screenPoint)
+        }()
+
+        guard acceptedByDestination || releasedOutsideBar else { return }
+
+        DispatchQueue.main.async {
+            completion?()
+        }
+    }
+
+    /// Bolha compacta só com o texto — visual próximo ao Spokenly.
+    private func makeDragPreviewImage() -> NSImage {
+        let font = NSFont.systemFont(ofSize: 13.5, weight: .semibold)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        paragraph.alignment = .left
+
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.white.withAlphaComponent(0.96),
+            .paragraphStyle: paragraph
+        ]
+
+        let maxTextWidth: CGFloat = 300
+        let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        let maxTextHeight = lineHeight * 2.15
+
+        let textBounds = (text as NSString).boundingRect(
+            with: NSSize(width: maxTextWidth, height: maxTextHeight),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: attrs
+        )
+
+        let padX: CGFloat = 16
+        let padY: CGFloat = 13
+        let radius: CGFloat = 12
+        let bubbleW = min(maxTextWidth, max(140, ceil(textBounds.width))) + padX * 2
+        let bubbleH = min(maxTextHeight, max(lineHeight, ceil(textBounds.height))) + padY * 2
+
+        let shadowBlur: CGFloat = 14
+        let margin = shadowBlur + 6
+        let imageSize = NSSize(width: bubbleW + margin * 2, height: bubbleH + margin * 2)
+
+        return NSImage(size: imageSize, flipped: false) { _ in
+            let bubble = NSRect(x: margin, y: margin, width: bubbleW, height: bubbleH)
+            let path = NSBezierPath(roundedRect: bubble, xRadius: radius, yRadius: radius)
+
+            // Sombra suave sob a bolha.
+            NSGraphicsContext.saveGraphicsState()
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.42)
+            shadow.shadowBlurRadius = shadowBlur
+            shadow.shadowOffset = NSSize(width: 0, height: -2)
+            shadow.set()
+            NSColor(calibratedWhite: 0.08, alpha: 0.55).setFill()
+            path.fill()
+            NSGraphicsContext.restoreGraphicsState()
+
+            // Vidro escuro translúcido.
+            NSColor(calibratedRed: 0.11, green: 0.12, blue: 0.15, alpha: 0.78).setFill()
+            path.fill()
+
+            // Borda fina clara.
+            NSColor.white.withAlphaComponent(0.20).setStroke()
+            path.lineWidth = 1
+            path.stroke()
+
+            let textRect = NSRect(
+                x: bubble.minX + padX,
+                y: bubble.minY + padY,
+                width: bubbleW - padX * 2,
+                height: bubbleH - padY * 2
+            )
+            (self.text as NSString).draw(in: textRect, withAttributes: attrs)
+            return true
+        }
     }
 }
