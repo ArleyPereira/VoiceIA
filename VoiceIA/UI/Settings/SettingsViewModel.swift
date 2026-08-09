@@ -324,27 +324,12 @@ final class SettingsViewModel {
 
     // MARK: - Modelos locais (UI)
 
-    var localStatusBadge: String {
-        totalDownloadedLocalModels > 0 ? "Pronto" : "Não configurado"
-    }
-
     var localStatusIsReady: Bool {
         totalDownloadedLocalModels > 0
     }
 
     private var totalDownloadedLocalModels: Int {
         localModelStore.downloadedCount + (parakeetModelStore.isDownloaded ? 1 : 0)
-    }
-
-    var selectedLocalModelDisplayName: String {
-        guard isLocalModelDownloaded(selectedLocalModel) else {
-            return "Nenhum"
-        }
-        return selectedLocalModel.displayName
-    }
-
-    var gpuStatusLabel: String {
-        useLocalWhisperGPU ? "GPU ligada" : "GPU desligada"
     }
 
     var storageSummaryLabel: String {
