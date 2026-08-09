@@ -34,6 +34,9 @@ final class AppState {
     /// Duração da gravação atual formatada (m:ss).
     var recordingDurationText: String = "0:00"
 
+    /// Texto da ditagem quando a inserção automática falhou (barra de resgate).
+    var pendingDictationText: String?
+
     private let audioRecorder: any AudioRecorderProtocol
     private let hotkeyService: any GlobalHotkeyServiceProtocol
     private let accessibilityService: any AccessibilityServiceProtocol
@@ -41,7 +44,6 @@ final class AppState {
     private let transcriptionService: any TranscriptionService
     private let overlayController = RecordingOverlayController()
     private let settingsWindowController = SettingsWindowController()
-    private let clipboardFallbackDialog = ClipboardFallbackDialogController()
     private let logger = Logger(subsystem: "dev.arley.santana.VoiceIA", category: "pipeline")
 
     private var successResetTask: Task<Void, Never>?
@@ -84,10 +86,25 @@ final class AppState {
     func openSettingsWindow() {
         settingsWindowController.show(
             settings: settings,
-            historyStore: historyStore
-        ) { [weak self] in
-            self?.releaseLocalWhisperResources()
-        }
+            historyStore: historyStore,
+            onTranscriptionPolicyChanged: { [weak self] in
+                self?.releaseLocalWhisperResources()
+            },
+            onRecordingHUDStyleChanged: { [weak self] in
+                guard let self else { return }
+                self.overlayController.sync(with: self)
+            },
+            onDictationHotkeyChanged: { [weak self] in
+                self?.reloadDictationHotkey()
+            },
+            onHotkeyCaptureSessionChanged: { [weak self] isCapturing in
+                if isCapturing {
+                    self?.pauseHotkeyMonitoringForCapture()
+                } else {
+                    self?.reloadDictationHotkey()
+                }
+            }
+        )
     }
 
     /// Libera o Whisper local da RAM/GPU quando o ditado não vai usá-lo.
@@ -137,7 +154,7 @@ final class AppState {
         return granted
     }
 
-    /// Liga o monitoramento global de ⇧ Tab.
+    /// Liga o monitoramento global do atalho de ditado.
     func startHotkeyMonitoring() {
         guard !isHotkeyMonitoringEnabled else { return }
 
@@ -152,7 +169,8 @@ final class AppState {
             self?.hotkeyService.resetHoldState()
         }
 
-        hotkeyService.start()
+        let hotkey = settings.dictationHotkey
+        hotkeyService.start(keyCode: hotkey.keyCode, modifiers: hotkey.modifiers)
         isHotkeyMonitoringEnabled = true
     }
 
@@ -161,16 +179,49 @@ final class AppState {
         isHotkeyMonitoringEnabled = false
     }
 
-    /// ⇧ Tab: inicia se idle; se já gravando/pausado, envia para transcrição.
+    /// Reaplica o atalho salvo (após o usuário alterar em Configurações).
+    func reloadDictationHotkey() {
+        let hotkey = settings.dictationHotkey
+        if isHotkeyMonitoringEnabled {
+            hotkeyService.rebind(keyCode: hotkey.keyCode, modifiers: hotkey.modifiers)
+        } else {
+            startHotkeyMonitoring()
+        }
+    }
+
+    /// Pausa o atalho global enquanto a UI captura um novo combo.
+    func pauseHotkeyMonitoringForCapture() {
+        stopHotkeyMonitoring()
+    }
+
+    /// Atalho: inicia se idle; se já gravando/pausado, envia para transcrição.
     func handleHotkeyPressed() async {
         switch recordingState {
         case .recording, .paused:
             guard !isMicrophoneOnlyTest else { return }
             await finishDictationPipeline()
-        case .idle, .error, .success:
+        case .idle, .error, .success, .awaitingManualInsert:
             await beginDictationSession()
         case .transcribing, .inserting:
             break
+        }
+    }
+
+    /// Copia a ditagem pendente (só sob pedido do usuário).
+    func copyPendingDictation() {
+        guard let text = pendingDictationText, !text.isEmpty else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+    }
+
+    /// Fecha a barra de resgate sem copiar.
+    func dismissPendingDictation() {
+        pendingDictationText = nil
+        if recordingState == .awaitingManualInsert {
+            recordingState = .idle
+        } else {
+            overlayController.sync(with: self)
         }
     }
 
@@ -184,6 +235,7 @@ final class AppState {
         lastHotkeyResultMessage = nil
         lastInsertionMessage = nil
         lastTranscriptionText = nil
+        pendingDictationText = nil
         displayedAudioLevel = 0
         recordingDurationText = "0:00"
         accumulatedRecordingDuration = 0
@@ -365,7 +417,7 @@ final class AppState {
     /// Single-flight: só inicia se estiver livre.
     private var canStartRecording: Bool {
         switch recordingState {
-        case .idle, .error, .success:
+        case .idle, .error, .success, .awaitingManualInsert:
             return true
         case .recording, .paused, .transcribing, .inserting:
             return false
@@ -494,19 +546,15 @@ final class AppState {
         capturedFocusedElement = nil
     }
 
-    /// Mostra a ditagem para o usuário quando a inserção automática falhou.
+    /// Mostra a ditagem na barra flutuante quando a inserção automática falhou.
     ///
     /// Não escreve na área de transferência: sobrescrever o que o usuário
     /// copiou seria perda de dado. A cópia só acontece se ele clicar em "Copiar".
     private func presentInsertionRescue(for text: String, reason: InsertionRescueReason) {
         lastInsertionMessage = reason.statusMessage
-        recordingState = .idle
         permissionDeniedMessage = nil
-
-        // Adia um tick para o HUD idle fechar antes do diálogo aparecer.
-        DispatchQueue.main.async { [weak self] in
-            self?.clipboardFallbackDialog.present(transcribedText: text, reason: reason)
-        }
+        pendingDictationText = text
+        recordingState = .awaitingManualInsert
     }
 
     /// Pré-condições do ditado conforme backend (teste ignora tudo).

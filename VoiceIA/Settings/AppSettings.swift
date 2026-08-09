@@ -14,6 +14,9 @@ final class AppSettings {
         static let transcriptionBackend = "settings.transcriptionBackend"
         static let appearanceTheme = "settings.appearanceTheme"
         static let isTranscriptionHistoryEnabled = "settings.isTranscriptionHistoryEnabled"
+        static let recordingHUDStyle = "settings.recordingHUDStyle"
+        static let hotkeyKeyCode = "settings.hotkeyKeyCode"
+        static let hotkeyModifiers = "settings.hotkeyModifiers"
     }
 
     private let apiKeyStore: any APIKeyProvider
@@ -76,6 +79,27 @@ final class AppSettings {
         }
     }
 
+    /// Estilo da barra flutuante de gravação (`moderno` / `classico`).
+    var recordingHUDStyle: String {
+        didSet {
+            defaults.set(recordingHUDStyle, forKey: DefaultsKey.recordingHUDStyle)
+        }
+    }
+
+    /// Código Carbon da tecla do atalho de ditado.
+    var hotkeyKeyCode: Int {
+        didSet {
+            defaults.set(hotkeyKeyCode, forKey: DefaultsKey.hotkeyKeyCode)
+        }
+    }
+
+    /// Modificadores Carbon do atalho de ditado.
+    var hotkeyModifiers: Int {
+        didSet {
+            defaults.set(hotkeyModifiers, forKey: DefaultsKey.hotkeyModifiers)
+        }
+    }
+
     /// Indica se existe API key salva no Keychain (sem expor o valor).
     private(set) var hasAPIKey: Bool
 
@@ -124,7 +148,40 @@ final class AppSettings {
             self.isTranscriptionHistoryEnabled = defaults.bool(forKey: DefaultsKey.isTranscriptionHistoryEnabled)
         }
 
+        let storedHUD = defaults.string(forKey: DefaultsKey.recordingHUDStyle)
+        if let storedHUD, RecordingHUDStyle(rawValue: storedHUD) != nil {
+            self.recordingHUDStyle = storedHUD
+        } else {
+            self.recordingHUDStyle = RecordingHUDStyle.moderno.rawValue
+        }
+
+        if defaults.object(forKey: DefaultsKey.hotkeyKeyCode) == nil {
+            self.hotkeyKeyCode = Int(DictationHotkey.default.keyCode)
+        } else {
+            self.hotkeyKeyCode = defaults.integer(forKey: DefaultsKey.hotkeyKeyCode)
+        }
+
+        if defaults.object(forKey: DefaultsKey.hotkeyModifiers) == nil {
+            self.hotkeyModifiers = Int(DictationHotkey.default.modifiers)
+        } else {
+            self.hotkeyModifiers = defaults.integer(forKey: DefaultsKey.hotkeyModifiers)
+        }
+
         self.hasAPIKey = apiKeyStore.hasAPIKey
+    }
+
+    /// Atalho de ditado tipado a partir dos inteiros persistidos.
+    var dictationHotkey: DictationHotkey {
+        get {
+            DictationHotkey(
+                keyCode: UInt32(hotkeyKeyCode),
+                modifiers: UInt32(hotkeyModifiers)
+            )
+        }
+        set {
+            hotkeyKeyCode = Int(newValue.keyCode)
+            hotkeyModifiers = Int(newValue.modifiers)
+        }
     }
 
     /// Relê o estado da API key no Keychain.

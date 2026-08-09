@@ -4,6 +4,7 @@ import SwiftUI
 /// Abas da janela de configurações.
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
+    case appearance
     case models
     case transcription
     case history
@@ -14,6 +15,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .general: return "Geral"
+        case .appearance: return "Aparência"
         case .models: return "Modelos"
         case .transcription: return "Transcrição"
         case .history: return "Histórico"
@@ -24,6 +26,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .general: return "slider.horizontal.3"
+        case .appearance: return "paintpalette.fill"
         case .models: return "sparkles"
         case .transcription: return "waveform"
         case .history: return "clock.arrow.circlepath"
@@ -33,7 +36,8 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 
     var subtitle: String {
         switch self {
-        case .general: return "Atalho de ditado e permissões do macOS."
+        case .general: return "Início automático, atalho e permissões do macOS."
+        case .appearance: return "Tema da interface e visual da barra de gravação."
         case .models: return "API OpenAI e modelos locais Whisper."
         case .transcription: return "Idioma e modelo usados no ditado."
         case .history: return "Transcrições salvas neste Mac."
@@ -60,6 +64,9 @@ struct SettingsView: View {
         .onAppear {
             viewModel.refreshPermissions()
             viewModel.localModelStore.refreshDiskState()
+        }
+        .onDisappear {
+            viewModel.cancelHotkeyCapture()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             viewModel.refreshPermissions()
@@ -164,6 +171,8 @@ struct SettingsView: View {
                 switch selectedTab {
                 case .general:
                     generalTab
+                case .appearance:
+                    appearanceTab
                 case .models:
                     modelsTab
                 case .transcription:
@@ -213,45 +222,59 @@ struct SettingsView: View {
                 }
             }
 
-            SettingsCard {
-                HStack(alignment: .top, spacing: 16) {
-                    Text("Aparência")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(SettingsTheme.primaryLabel(colorScheme))
-                        // Compensa a altura visual da miniatura para alinhar o topo do texto
-                        // com o topo das opções (baseline óptica da primeira linha).
-                        .padding(.top, 2)
-
-                    Spacer(minLength: 12)
-
-                    AppearanceThemePicker(
-                        selection: Binding(
-                            get: { viewModel.appearanceTheme },
-                            set: { viewModel.appearanceTheme = $0 }
-                        )
-                    )
-                }
-            }
-
-            SettingsCard(title: "Atalho de ditado") {
-                VStack(spacing: 12) {
+            SettingsCard(
+                title: "Atalho de ditado",
+                subtitle: viewModel.isCapturingHotkey
+                    ? (viewModel.hotkeyCaptureHint ?? "Pressione o novo atalho…")
+                    : viewModel.dictationHotkey.holdInstruction
+            ) {
+                VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 10) {
-                        HotkeyKeyCap(symbol: "⇧", title: "Shift")
+                        if viewModel.isCapturingHotkey {
+                            Text("Aguardando teclas…")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(SettingsTheme.accent)
+                        } else {
+                            ForEach(Array(viewModel.dictationHotkey.keyParts.enumerated()), id: \.element.id) { index, part in
+                                if index > 0 {
+                                    Text("+")
+                                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                        .foregroundStyle(SettingsTheme.tertiaryLabel(colorScheme))
+                                }
+                                HotkeyKeyCap(symbol: part.symbol, title: part.title)
+                            }
+                        }
 
-                        Text("+")
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
-                            .foregroundStyle(SettingsTheme.tertiaryLabel(colorScheme))
+                        Spacer(minLength: 8)
 
-                        HotkeyKeyCap(title: "Tab")
+                        if viewModel.isCapturingHotkey {
+                            Button("Cancelar") {
+                                viewModel.cancelHotkeyCapture()
+                            }
+                            .buttonStyle(GhostButtonStyle())
+                        } else {
+                            Button("Alterar") {
+                                viewModel.beginHotkeyCapture()
+                            }
+                            .buttonStyle(GhostButtonStyle())
+                        }
                     }
 
-                    Text(HotkeyConfiguration.holdInstruction)
-                        .font(.system(size: 12))
-                        .foregroundStyle(SettingsTheme.tertiaryLabel(colorScheme))
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if !viewModel.isCapturingHotkey, let hint = viewModel.hotkeyCaptureHint {
+                        Text(hint)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Color(red: 0.40, green: 0.90, blue: 0.62))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .transition(.opacity)
+                            .task(id: hint) {
+                                try? await Task.sleep(for: .seconds(5))
+                                guard !Task.isCancelled else { return }
+                                if viewModel.hotkeyCaptureHint == hint {
+                                    viewModel.clearHotkeyCaptureHint()
+                                }
+                            }
+                    }
                 }
-                .frame(maxWidth: .infinity)
             }
 
             SettingsCard(
@@ -285,6 +308,36 @@ struct SettingsView: View {
                         .buttonStyle(GhostButtonStyle())
                     }
                 }
+            }
+        }
+    }
+
+    // MARK: - Aba Aparência
+
+    private var appearanceTab: some View {
+        VStack(spacing: 16) {
+            SettingsCard(
+                title: "Tema",
+                subtitle: "Aparência da janela de configurações: sistema, claro ou escuro."
+            ) {
+                AppearanceThemePicker(
+                    selection: Binding(
+                        get: { viewModel.appearanceTheme },
+                        set: { viewModel.appearanceTheme = $0 }
+                    )
+                )
+            }
+
+            SettingsCard(
+                title: "Barra de gravação",
+                subtitle: "Visual da barra flutuante com o waveform durante o ditado."
+            ) {
+                RecordingHUDStylePicker(
+                    selection: Binding(
+                        get: { viewModel.recordingHUDStyle },
+                        set: { viewModel.recordingHUDStyle = $0 }
+                    )
+                )
             }
         }
     }

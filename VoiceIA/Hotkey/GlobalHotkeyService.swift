@@ -1,35 +1,36 @@
 import Carbon
 import Foundation
 
-/// Monitoramento global do atalho ⇧ Tab (push-to-talk).
+/// Monitoramento global do atalho de ditado (push-to-talk).
 nonisolated final class GlobalHotkeyService: GlobalHotkeyServiceProtocol, @unchecked Sendable {
-    /// Chamado quando ⇧ Tab é pressionado.
+    /// Chamado quando o atalho é pressionado.
     var onPressed: (@Sendable () -> Void)?
 
-    /// Chamado quando ⇧ Tab é solto.
+    /// Chamado quando o atalho é solto.
     var onReleased: (@Sendable () -> Void)?
 
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
     private var isHotkeyHeld = false
     private let lock = NSLock()
+    private var keyCode: UInt32 = DictationHotkey.default.keyCode
+    private var modifiers: UInt32 = DictationHotkey.default.modifiers
 
     private let hotKeyID = EventHotKeyID(
         signature: FourCharCode("VIA1"),
         id: 1
     )
 
-    func start() {
+    func start(keyCode: UInt32, modifiers: UInt32) {
         stop()
+        self.keyCode = keyCode
+        self.modifiers = modifiers
         installHandler()
         registerHotKey()
     }
 
     func stop() {
-        if let hotKeyRef {
-            UnregisterEventHotKey(hotKeyRef)
-            self.hotKeyRef = nil
-        }
+        unregisterHotKeyOnly()
 
         if let handlerRef {
             RemoveEventHandler(handlerRef)
@@ -37,6 +38,17 @@ nonisolated final class GlobalHotkeyService: GlobalHotkeyServiceProtocol, @unche
         }
 
         resetHoldState()
+    }
+
+    func rebind(keyCode: UInt32, modifiers: UInt32) {
+        self.keyCode = keyCode
+        self.modifiers = modifiers
+        unregisterHotKeyOnly()
+        resetHoldState()
+        if handlerRef == nil {
+            installHandler()
+        }
+        registerHotKey()
     }
 
     func resetHoldState() {
@@ -57,11 +69,18 @@ nonisolated final class GlobalHotkeyService: GlobalHotkeyServiceProtocol, @unche
 
     // MARK: - Privado
 
+    private func unregisterHotKeyOnly() {
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
+        }
+    }
+
     private func registerHotKey() {
         var ref: EventHotKeyRef?
         let status = RegisterEventHotKey(
-            HotkeyConfiguration.keyCode,
-            HotkeyConfiguration.modifiers,
+            keyCode,
+            modifiers,
             hotKeyID,
             GetEventDispatcherTarget(),
             0,

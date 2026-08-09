@@ -17,15 +17,18 @@ struct VoiceIAApp: App {
     }
 
     private var helpText: String {
+        let hotkey = appState.settings.dictationHotkey
         switch appState.recordingState {
         case .recording:
-            return "VoiceIA — Ouvindo… solte \(HotkeyConfiguration.displayName)"
+            return "VoiceIA — Ouvindo… solte \(hotkey.displayName)"
         case .success:
             return "VoiceIA — Concluído"
         case .error:
             return "VoiceIA — Erro"
+        case .awaitingManualInsert:
+            return "VoiceIA — Arraste ou copie o texto"
         default:
-            return "VoiceIA — \(HotkeyConfiguration.holdInstruction)"
+            return "VoiceIA — \(hotkey.holdInstruction)"
         }
     }
 }

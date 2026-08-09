@@ -61,6 +61,15 @@ final class SettingsViewModel {
     /// Notifica a janela para aplicar Sistema / Claro / Escuro.
     var onAppearanceThemeChanged: () -> Void
 
+    /// Notifica o AppState para mostrar/esconder a barra conforme o estilo.
+    var onRecordingHUDStyleChanged: () -> Void
+
+    /// Notifica o AppState para re-registrar o atalho global.
+    var onDictationHotkeyChanged: () -> Void
+
+    /// `true` = captura ativa (pausar atalho global); `false` = retomou.
+    var onHotkeyCaptureSessionChanged: (Bool) -> Void
+
     /// Incrementado quando o macOS muda claro/escuro — força o SwiftUI a
     /// reler `resolvedColorScheme` com a preferência em “Sistema”.
     private(set) var systemAppearanceEpoch = 0
@@ -84,6 +93,15 @@ final class SettingsViewModel {
     /// Aviso quando o macOS pede aprovação ou o app não está em Aplicativos.
     private(set) var launchAtLoginHint: String?
 
+    /// Escutando teclas para definir um novo atalho.
+    var isCapturingHotkey = false
+
+    /// Dica durante/após a captura do atalho.
+    var hotkeyCaptureHint: String?
+
+    /// Monitor local de teclado durante a captura.
+    private var hotkeyCaptureMonitor: Any?
+
     /// Sub-aba ativa em Modelos.
     var selectedModelsPane: ModelsPane = .api
 
@@ -92,13 +110,19 @@ final class SettingsViewModel {
         localModelStore: LocalWhisperModelStore? = nil,
         historyStore: TranscriptionHistoryStore? = nil,
         onTranscriptionPolicyChanged: @escaping () -> Void = {},
-        onAppearanceThemeChanged: @escaping () -> Void = {}
+        onAppearanceThemeChanged: @escaping () -> Void = {},
+        onRecordingHUDStyleChanged: @escaping () -> Void = {},
+        onDictationHotkeyChanged: @escaping () -> Void = {},
+        onHotkeyCaptureSessionChanged: @escaping (Bool) -> Void = { _ in }
     ) {
         self.settings = settings
         self.localModelStore = localModelStore ?? .shared
         self.historyStore = historyStore ?? .shared
         self.onTranscriptionPolicyChanged = onTranscriptionPolicyChanged
         self.onAppearanceThemeChanged = onAppearanceThemeChanged
+        self.onRecordingHUDStyleChanged = onRecordingHUDStyleChanged
+        self.onDictationHotkeyChanged = onDictationHotkeyChanged
+        self.onHotkeyCaptureSessionChanged = onHotkeyCaptureSessionChanged
         settings.refreshAPIKeyStatus()
         refreshPermissions()
         self.localModelStore.refreshDiskState()
@@ -116,6 +140,73 @@ final class SettingsViewModel {
             settings.appearanceTheme = newValue.rawValue
             onAppearanceThemeChanged()
         }
+    }
+
+    /// Estilo da barra flutuante (Moderno / Clássico / Nenhuma).
+    var recordingHUDStyle: RecordingHUDStyle {
+        get { RecordingHUDStyle(rawValue: settings.recordingHUDStyle) ?? .moderno }
+        set {
+            guard settings.recordingHUDStyle != newValue.rawValue else { return }
+            settings.recordingHUDStyle = newValue.rawValue
+            onRecordingHUDStyleChanged()
+        }
+    }
+
+    /// Atalho global de ditado escolhido pelo usuário.
+    var dictationHotkey: DictationHotkey {
+        settings.dictationHotkey
+    }
+
+    /// Inicia a escuta do novo atalho (Esc cancela).
+    func beginHotkeyCapture() {
+        guard !isCapturingHotkey else { return }
+        isCapturingHotkey = true
+        hotkeyCaptureHint = "Pressione o novo atalho… (Esc cancela)"
+        onHotkeyCaptureSessionChanged(true)
+
+        hotkeyCaptureMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handleHotkeyCaptureEvent(event) ?? event
+        }
+    }
+
+    /// Cancela a captura sem alterar o atalho atual.
+    func cancelHotkeyCapture() {
+        guard isCapturingHotkey else { return }
+        endHotkeyCaptureSession(hint: nil)
+    }
+
+    /// Esconde a mensagem de feedback do atalho (sucesso / captura).
+    func clearHotkeyCaptureHint() {
+        hotkeyCaptureHint = nil
+    }
+
+    private func handleHotkeyCaptureEvent(_ event: NSEvent) -> NSEvent? {
+        guard isCapturingHotkey else { return event }
+
+        if event.keyCode == 53 { // Esc
+            cancelHotkeyCapture()
+            return nil
+        }
+
+        guard let hotkey = DictationHotkey.from(event: event) else {
+            hotkeyCaptureHint = "Use um modificador (⌘ ⌥ ⇧ ⌃) + uma tecla."
+            return nil
+        }
+
+        settings.dictationHotkey = hotkey
+        onDictationHotkeyChanged()
+        endHotkeyCaptureSession(hint: "Atalho atualizado para \(hotkey.displayName).")
+        return nil
+    }
+
+    private func endHotkeyCaptureSession(hint: String?) {
+        if let hotkeyCaptureMonitor {
+            NSEvent.removeMonitor(hotkeyCaptureMonitor)
+            self.hotkeyCaptureMonitor = nil
+        }
+        isCapturingHotkey = false
+        hotkeyCaptureHint = hint
+        onHotkeyCaptureSessionChanged(false)
     }
 
     /// Esquema SwiftUI correspondente (sempre concreto para atualizar na hora).

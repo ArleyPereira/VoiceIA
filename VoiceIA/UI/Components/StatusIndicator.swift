@@ -24,7 +24,7 @@ struct StatusIndicator: View {
             return .green
         case .recording:
             return .red
-        case .paused, .transcribing, .inserting:
+        case .paused, .transcribing, .inserting, .awaitingManualInsert:
             return .orange
         case .error:
             return .red

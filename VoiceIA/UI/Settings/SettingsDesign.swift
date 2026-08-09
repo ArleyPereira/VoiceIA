@@ -124,6 +124,7 @@ struct AppearanceThemePicker: View {
             ForEach(AppAppearanceTheme.allCases) { theme in
                 themeOption(theme)
             }
+            Spacer(minLength: 0)
         }
     }
 
@@ -191,6 +192,108 @@ struct AppearanceThemePicker: View {
             }
             .padding(8)
         }
+    }
+}
+
+// MARK: - Seletor da barra flutuante
+
+/// Miniaturas Moderno / Clássico (estilo Super Whisper — Recording window).
+struct RecordingHUDStylePicker: View {
+    @Binding var selection: RecordingHUDStyle
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            ForEach(RecordingHUDStyle.allCases) { style in
+                styleOption(style)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func styleOption(_ style: RecordingHUDStyle) -> some View {
+        let isSelected = selection == style
+
+        return Button {
+            selection = style
+        } label: {
+            VStack(spacing: 8) {
+                hudPreview(style)
+                    .frame(width: 108, height: 56)
+                    .background {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(SettingsTheme.fieldFill(colorScheme))
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(
+                                isSelected ? SettingsTheme.accent : SettingsTheme.cardStroke(colorScheme),
+                                lineWidth: isSelected ? 2 : SettingsTheme.hairline
+                            )
+                    }
+                    .shadow(color: isSelected ? SettingsTheme.accent.opacity(0.35) : .clear, radius: 5, y: 0)
+
+                Text(style.displayName)
+                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(
+                        isSelected
+                            ? SettingsTheme.primaryLabel(colorScheme)
+                            : SettingsTheme.secondaryLabel(colorScheme)
+                    )
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func hudPreview(_ style: RecordingHUDStyle) -> some View {
+        switch style {
+        case .none:
+            Image(systemName: "eye.slash")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(SettingsTheme.secondaryLabel(colorScheme))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+        case .moderno, .classico:
+            Capsule()
+                .fill(style == .classico ? Color.black : Color(red: 0.10, green: 0.11, blue: 0.14))
+                .frame(width: 84, height: 18)
+                .overlay {
+                    HStack(spacing: 1.5) {
+                        ForEach(0..<11, id: \.self) { index in
+                            Capsule()
+                                .fill(Color.white.opacity(0.85))
+                                .frame(width: 2, height: previewBarHeight(index))
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                }
+                .overlay {
+                    if style == .moderno {
+                        Capsule()
+                            .strokeBorder(
+                                AngularGradient(
+                                    colors: [
+                                        Color(red: 0.30, green: 0.85, blue: 1.00),
+                                        Color(red: 0.72, green: 0.38, blue: 1.00),
+                                        Color(red: 1.00, green: 0.42, blue: 0.78),
+                                        Color(red: 0.30, green: 0.85, blue: 1.00)
+                                    ],
+                                    center: .center
+                                ),
+                                lineWidth: 1.2
+                            )
+                    } else {
+                        Capsule()
+                            .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+                    }
+                }
+        }
+    }
+
+    private func previewBarHeight(_ index: Int) -> CGFloat {
+        let pattern: [CGFloat] = [4, 7, 11, 8, 14, 9, 12, 6, 10, 5, 8]
+        return pattern[index % pattern.count]
     }
 }
 

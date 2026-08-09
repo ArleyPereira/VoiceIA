@@ -16,10 +16,16 @@ final class SettingsWindowController {
     ///
     /// - Parameter onTranscriptionPolicyChanged: chamado quando modo teste,
     ///   backend local, modelo ou GPU mudam — para liberar o Whisper da memória.
+    /// - Parameter onRecordingHUDStyleChanged: reaplica a barra flutuante na hora.
+    /// - Parameter onDictationHotkeyChanged: re-registra o atalho global.
+    /// - Parameter onHotkeyCaptureSessionChanged: pausa/retoma o atalho durante a captura.
     func show(
         settings: AppSettings,
         historyStore: TranscriptionHistoryStore = .shared,
-        onTranscriptionPolicyChanged: @escaping () -> Void = {}
+        onTranscriptionPolicyChanged: @escaping () -> Void = {},
+        onRecordingHUDStyleChanged: @escaping () -> Void = {},
+        onDictationHotkeyChanged: @escaping () -> Void = {},
+        onHotkeyCaptureSessionChanged: @escaping (Bool) -> Void = { _ in }
     ) {
         self.settings = settings
         settings.refreshAPIKeyStatus()
@@ -31,12 +37,18 @@ final class SettingsWindowController {
         if let viewModel {
             viewModel.onTranscriptionPolicyChanged = onTranscriptionPolicyChanged
             viewModel.onAppearanceThemeChanged = applyTheme
+            viewModel.onRecordingHUDStyleChanged = onRecordingHUDStyleChanged
+            viewModel.onDictationHotkeyChanged = onDictationHotkeyChanged
+            viewModel.onHotkeyCaptureSessionChanged = onHotkeyCaptureSessionChanged
         } else {
             let viewModel = SettingsViewModel(
                 settings: settings,
                 historyStore: historyStore,
                 onTranscriptionPolicyChanged: onTranscriptionPolicyChanged,
-                onAppearanceThemeChanged: applyTheme
+                onAppearanceThemeChanged: applyTheme,
+                onRecordingHUDStyleChanged: onRecordingHUDStyleChanged,
+                onDictationHotkeyChanged: onDictationHotkeyChanged,
+                onHotkeyCaptureSessionChanged: onHotkeyCaptureSessionChanged
             )
             self.viewModel = viewModel
             let root = SettingsView(viewModel: viewModel)

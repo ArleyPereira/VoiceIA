@@ -9,6 +9,8 @@ enum RecordingState: Equatable {
     case inserting
     case success
     case error
+    /// Inserção automática falhou — HUD com texto para arrastar/copiar.
+    case awaitingManualInsert
 }
 
 extension RecordingState {
@@ -29,6 +31,8 @@ extension RecordingState {
             return "Concluído"
         case .error:
             return "Algo deu errado"
+        case .awaitingManualInsert:
+            return "Texto pronto"
         }
     }
 }
