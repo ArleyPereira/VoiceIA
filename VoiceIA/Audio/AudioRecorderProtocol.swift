@@ -1,5 +1,20 @@
 import Foundation
 
+/// Material disponível assim que a captura para, antes de o `.m4a` existir.
+struct StoppedCapture {
+    /// PCM 16 kHz mono da ditagem inteira.
+    let pcmSamples: [Float]
+    /// Energia acumulada durante a captura (decide "houve fala?" sem revarrer).
+    let speechStats: SpeechEnergyStats
+    /// Onde o `.m4a` vai aparecer quando a finalização terminar.
+    let fileURL: URL
+
+    /// Duração real capturada, derivada do próprio PCM.
+    var durationSeconds: Double {
+        Double(pcmSamples.count) / 16_000
+    }
+}
+
 /// Contrato para captura de áudio do microfone.
 protocol AudioRecorderProtocol: AnyObject {
     /// Indica se há sessão de gravação aberta (ativa ou pausada).
@@ -24,13 +39,16 @@ protocol AudioRecorderProtocol: AnyObject {
     func resumeRecording() async throws
 
     /// Encerra a gravação e devolve o URL do arquivo gerado.
+    ///
+    /// Aguarda a finalização do `.m4a`. No ditado prefira `stopCapture()`:
+    /// a ASR local só precisa do PCM e o encoder AAC não deve segurar a fila.
     func stopRecording() async throws -> URL
 
-    /// Consome o PCM 16 kHz mono acumulado durante a última captura.
-    ///
-    /// Evita o roundtrip AAC→PCM na transcrição local (Parakeet/Whisper).
-    /// Devolve `nil` se não houver amostras.
-    func consumePCMSamples() -> [Float]?
+    /// Encerra a captura e devolve o PCM na hora, sem esperar o `.m4a`.
+    func stopCapture() async throws -> StoppedCapture
+
+    /// Aguarda a finalização do `.m4a` iniciada por `stopCapture()`.
+    func finalizedRecording() async throws -> URL
 
     /// Remove um arquivo de gravação temporário.
     func deleteRecording(at url: URL) throws

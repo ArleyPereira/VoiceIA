@@ -48,6 +48,10 @@ final class AudioRecorder: AudioRecorderProtocol, @unchecked Sendable {
     private var runtimeErrorObserver: NSObjectProtocol?
     /// PCM 16 kHz mono da captura atual — usado pela ASR local sem decodificar o `.m4a`.
     private var pcmSamples: [Float] = []
+    /// Energia acumulada bloco a bloco, evitando revarrer o PCM no fim.
+    private var speechStats = SpeechEnergyStats()
+    /// Finalização do `.m4a` em andamento (encoder AAC + mux), fora do caminho crítico.
+    private var finalizationTask: Task<URL, Error>?
 
     private(set) var lastDiagnostics: CaptureDiagnostics = .empty
 
@@ -110,12 +114,31 @@ final class AudioRecorder: AudioRecorderProtocol, @unchecked Sendable {
         }
     }
 
-    func stopRecording() async throws -> URL {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+    func stopCapture() async throws -> StoppedCapture {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<StoppedCapture, Error>) in
             configQueue.async {
-                self.finishCapture(completion: continuation.resume(with:))
+                self.drainCapture(completion: continuation.resume(with:))
             }
         }
+    }
+
+    func finalizedRecording() async throws -> URL {
+        guard let task = currentFinalizationTask() else {
+            throw VoiceInputError.recordingNotInProgress
+        }
+        return try await task.value
+    }
+
+    /// Leitura síncrona: `NSLock` não pode ser tomado em contexto assíncrono.
+    private func currentFinalizationTask() -> Task<URL, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return finalizationTask
+    }
+
+    func stopRecording() async throws -> URL {
+        _ = try await stopCapture()
+        return try await finalizedRecording()
     }
 
     func pauseRecording() async throws {
@@ -147,14 +170,6 @@ final class AudioRecorder: AudioRecorderProtocol, @unchecked Sendable {
     func deleteRecording(at url: URL) throws {
         guard FileManager.default.fileExists(atPath: url.path) else { return }
         try FileManager.default.removeItem(at: url)
-    }
-
-    func consumePCMSamples() -> [Float]? {
-        lock.lock()
-        let samples = pcmSamples
-        pcmSamples = []
-        lock.unlock()
-        return samples.isEmpty ? nil : samples
     }
 
     /// Lê o nível atual e alimenta o medidor da waveform.
@@ -207,6 +222,7 @@ final class AudioRecorder: AudioRecorderProtocol, @unchecked Sendable {
         levelValue = 0
         deviceName = device.localizedName
         pcmSamples.removeAll(keepingCapacity: true)
+        speechStats = SpeechEnergyStats()
         sessionOpen = true
         capturing = true
         lock.unlock()
@@ -271,17 +287,71 @@ final class AudioRecorder: AudioRecorderProtocol, @unchecked Sendable {
         session.addOutput(audioOutput)
     }
 
-    private func finishCapture(completion: @escaping (Result<URL, Error>) -> Void) {
+    /// Encerra a captura e devolve o PCM **imediatamente**.
+    ///
+    /// O encoder AAC e o mux do `.m4a` custam caro e a ASR local não precisa do
+    /// arquivo — ela transcreve o PCM que já está em memória. Por isso só a
+    /// drenagem dos buffers fica no caminho crítico; o resto vai para
+    /// `finalizationTask`, que quem precisar do arquivo aguarda depois.
+    private func drainCapture(completion: @escaping (Result<StoppedCapture, Error>) -> Void) {
         lock.lock()
         let wasOpen = sessionOpen
         let fileURL = currentFileURL
-        let writer = assetWriter
-        let input = writerInput
+        let hasWriter = assetWriter != nil && writerInput != nil
         sessionOpen = false
         capturing = false
+        levelValue = 0
+        finalizationTask = nil
         lock.unlock()
 
-        guard wasOpen, let fileURL, let writer, let input else {
+        LiveAudioMeter.shared.reset()
+
+        guard wasOpen, hasWriter, let fileURL else {
+            completion(.failure(VoiceInputError.recordingNotInProgress))
+            return
+        }
+
+        // Sem delegate e com a fila drenada, nenhum buffer novo entra depois
+        // daqui — o PCM lido abaixo é o material completo da ditagem.
+        audioOutput.setSampleBufferDelegate(nil, queue: nil)
+        sampleQueue.sync { }
+
+        lock.lock()
+        let samples = pcmSamples
+        pcmSamples = []
+        let stats = speechStats
+        lock.unlock()
+
+        // `writer`/`input` ficam nas propriedades e são lidos lá dentro:
+        // `AVAssetWriter` não é `Sendable` e não pode atravessar o Task.
+        let task = Task { [weak self] in
+            guard let self else { throw VoiceInputError.recordingFailed }
+            return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+                // Na configQueue para não correr com o beginCapture de uma
+                // ditagem seguinte, que reconfigura a mesma AVCaptureSession.
+                // Como estamos dentro dela agora, este bloco só roda quando
+                // `drainCapture` retornar.
+                self.configQueue.async {
+                    self.finalizeWriter(fileURL: fileURL, completion: continuation.resume(with:))
+                }
+            }
+        }
+
+        lock.lock()
+        finalizationTask = task
+        lock.unlock()
+
+        completion(.success(StoppedCapture(pcmSamples: samples, speechStats: stats, fileURL: fileURL)))
+    }
+
+    /// Fecha a sessão de captura e o arquivo AAC — fora do caminho crítico.
+    private func finalizeWriter(fileURL: URL, completion: @escaping (Result<URL, Error>) -> Void) {
+        lock.lock()
+        let writer = assetWriter
+        let input = writerInput
+        lock.unlock()
+
+        guard let writer, let input else {
             completion(.failure(VoiceInputError.recordingNotInProgress))
             return
         }
@@ -289,10 +359,6 @@ final class AudioRecorder: AudioRecorderProtocol, @unchecked Sendable {
         if session.isRunning {
             session.stopRunning()
         }
-        audioOutput.setSampleBufferDelegate(nil, queue: nil)
-
-        // Garante que nenhum buffer em voo ainda escreva depois do markAsFinished.
-        sampleQueue.sync { }
         input.markAsFinished()
 
         writer.finishWriting { [weak self] in
@@ -442,8 +508,10 @@ final class AudioRecorder: AudioRecorderProtocol, @unchecked Sendable {
         guard sampleCount > 0 else { return }
 
         let scale = 1 / Float(Int16.max)
+        let loudThreshold = SpeechPresenceAnalyzer.loudSampleThreshold
         var sumOfSquares: Float = 0
         var peak: Float = 0
+        var loudSamples = 0
         var floats = [Float](repeating: 0, count: sampleCount)
         for index in 0..<sampleCount {
             let sample = Float(samples[index]) * scale
@@ -451,6 +519,9 @@ final class AudioRecorder: AudioRecorderProtocol, @unchecked Sendable {
             let absolute = abs(sample)
             sumOfSquares += absolute * absolute
             peak = max(peak, absolute)
+            if absolute >= loudThreshold {
+                loudSamples += 1
+            }
         }
 
         let rms = (sumOfSquares / Float(sampleCount)).squareRoot()
@@ -460,6 +531,11 @@ final class AudioRecorder: AudioRecorderProtocol, @unchecked Sendable {
         lock.lock()
         pcmSamples.append(contentsOf: floats)
         observedPeak = max(observedPeak, peak)
+        // Acumula em Double: somar milhões de quadrados em Float perde precisão.
+        speechStats.sampleCount += sampleCount
+        speechStats.sumSquares += Double(sumOfSquares)
+        speechStats.peak = max(speechStats.peak, peak)
+        speechStats.loudSampleCount += loudSamples
         levelValue += (normalized - levelValue) * (normalized > levelValue ? 0.6 : 0.25)
         let level = levelValue
         lock.unlock()
