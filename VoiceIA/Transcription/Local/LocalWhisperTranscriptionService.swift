@@ -18,7 +18,7 @@ final class LocalWhisperTranscriptionService: TranscriptionService, @unchecked S
         self.modelStore = modelStore
     }
 
-    func transcribe(audioURL: URL) async throws -> String {
+    func transcribe(audioURL: URL, pcmSamples: [Float]? = nil) async throws -> String {
         let modelID = await MainActor.run { settings.selectedLocalWhisperModel }
         let useGPU = await MainActor.run { settings.useLocalWhisperGPU }
         let language = await MainActor.run { settings.transcriptionLanguage }
@@ -35,7 +35,12 @@ final class LocalWhisperTranscriptionService: TranscriptionService, @unchecked S
 
         logger.notice("Transcrevendo localmente com \(modelKind.displayName, privacy: .public) (GPU=\(useGPU, privacy: .public)).")
 
-        let samples = try WhisperAudio.samples(fromFile: audioURL)
+        let samples: [Float]
+        if let pcmSamples, !pcmSamples.isEmpty {
+            samples = pcmSamples
+        } else {
+            samples = try WhisperAudio.samples(fromFile: audioURL)
+        }
         guard SpeechPresenceAnalyzer.hasSpeechEnergy(in: samples) else {
             logger.notice("Áudio sem energia de fala — ignorando (evita alucinação do Whisper).")
             throw VoiceInputError.noSpeechDetected
@@ -98,34 +103,55 @@ final class LocalWhisperTranscriptionService: TranscriptionService, @unchecked S
     }
 }
 
-/// Escolhe OpenAI ou Whisper local conforme as preferências.
+/// Escolhe OpenAI, Whisper local ou Parakeet conforme as preferências.
 final class CompositeTranscriptionService: TranscriptionService, @unchecked Sendable {
     private let settings: AppSettings
     private let openAI: OpenAITranscriptionService
-    private let local: LocalWhisperTranscriptionService
+    private let localWhisper: LocalWhisperTranscriptionService
+    private let localParakeet: LocalParakeetTranscriptionService
 
     init(settings: AppSettings) {
         self.settings = settings
         self.openAI = OpenAITranscriptionService(settings: settings)
-        self.local = LocalWhisperTranscriptionService(settings: settings)
+        self.localWhisper = LocalWhisperTranscriptionService(settings: settings)
+        self.localParakeet = LocalParakeetTranscriptionService(settings: settings)
     }
 
-    func transcribe(audioURL: URL) async throws -> String {
+    func transcribe(audioURL: URL, pcmSamples: [Float]? = nil) async throws -> String {
         let testMode = await MainActor.run { settings.isTestModeEnabled }
         if testMode {
             // Mantém o mock no serviço OpenAI (sem rede).
-            return try await openAI.transcribe(audioURL: audioURL)
+            return try await openAI.transcribe(audioURL: audioURL, pcmSamples: nil)
         }
 
         let backend = await MainActor.run { settings.transcriptionBackend }
         if backend == "local" {
-            return try await local.transcribe(audioURL: audioURL)
+            let modelID = await MainActor.run { settings.selectedLocalWhisperModel }
+            let model = LocalTranscriptionModel(rawValue: modelID) ?? .default
+            switch model.engine {
+            case .whisper:
+                return try await localWhisper.transcribe(audioURL: audioURL, pcmSamples: pcmSamples)
+            case .parakeet:
+                return try await localParakeet.transcribe(audioURL: audioURL, pcmSamples: pcmSamples)
+            }
         }
-        return try await openAI.transcribe(audioURL: audioURL)
+        return try await openAI.transcribe(audioURL: audioURL, pcmSamples: nil)
     }
 
-    /// Descarta o modelo local em cache (modo teste, API ou troca de modelo/GPU).
+    /// Pré-carrega o Parakeet quando ele é o modelo local ativo.
+    func warmLocalModelsIfNeeded() {
+        Task { @MainActor in
+            guard settings.transcriptionBackend == "local",
+                  !settings.isTestModeEnabled else { return }
+            let model = LocalTranscriptionModel(rawValue: settings.selectedLocalWhisperModel) ?? .default
+            guard model.engine == .parakeet else { return }
+            localParakeet.warmUpIfNeeded()
+        }
+    }
+
+    /// Descarta Whisper e Parakeet em cache (modo teste, API ou troca de modelo/GPU).
     func unloadCachedLocalModel() {
-        local.unloadCachedModel()
+        localWhisper.unloadCachedModel()
+        localParakeet.unloadCachedModel()
     }
 }

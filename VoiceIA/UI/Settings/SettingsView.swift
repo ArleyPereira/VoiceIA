@@ -63,14 +63,14 @@ struct SettingsView: View {
         .preferredColorScheme(viewModel.preferredColorScheme)
         .onAppear {
             viewModel.refreshPermissions()
-            viewModel.localModelStore.refreshDiskState()
+            viewModel.refreshLocalModelDiskState()
         }
         .onDisappear {
             viewModel.cancelHotkeyCapture()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             viewModel.refreshPermissions()
-            viewModel.localModelStore.refreshDiskState()
+            viewModel.refreshLocalModelDiskState()
         }
     }
 

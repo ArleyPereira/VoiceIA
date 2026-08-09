@@ -50,6 +50,7 @@ enum ModelsPane: String, CaseIterable, Identifiable {
 final class SettingsViewModel {
     private let settings: AppSettings
     let localModelStore: LocalWhisperModelStore
+    let parakeetModelStore: LocalParakeetModelStore
     let historyStore: TranscriptionHistoryStore
 
     /// Janela AppKit que hospeda as configurações (para centralizar diálogos filhos).
@@ -108,6 +109,7 @@ final class SettingsViewModel {
     init(
         settings: AppSettings,
         localModelStore: LocalWhisperModelStore? = nil,
+        parakeetModelStore: LocalParakeetModelStore? = nil,
         historyStore: TranscriptionHistoryStore? = nil,
         onTranscriptionPolicyChanged: @escaping () -> Void = {},
         onAppearanceThemeChanged: @escaping () -> Void = {},
@@ -117,6 +119,7 @@ final class SettingsViewModel {
     ) {
         self.settings = settings
         self.localModelStore = localModelStore ?? .shared
+        self.parakeetModelStore = parakeetModelStore ?? .shared
         self.historyStore = historyStore ?? .shared
         self.onTranscriptionPolicyChanged = onTranscriptionPolicyChanged
         self.onAppearanceThemeChanged = onAppearanceThemeChanged
@@ -125,7 +128,7 @@ final class SettingsViewModel {
         self.onHotkeyCaptureSessionChanged = onHotkeyCaptureSessionChanged
         settings.refreshAPIKeyStatus()
         refreshPermissions()
-        self.localModelStore.refreshDiskState()
+        refreshLocalModelDiskState()
     }
 
     var hasAPIKey: Bool {
@@ -285,9 +288,9 @@ final class SettingsViewModel {
         }
     }
 
-    var selectedLocalModel: LocalWhisperModel {
+    var selectedLocalModel: LocalTranscriptionModel {
         get {
-            LocalWhisperModel(rawValue: settings.selectedLocalWhisperModel) ?? .largeV3
+            LocalTranscriptionModel(rawValue: settings.selectedLocalWhisperModel) ?? .default
         }
         set {
             guard settings.selectedLocalWhisperModel != newValue.rawValue else { return }
@@ -322,15 +325,19 @@ final class SettingsViewModel {
     // MARK: - Modelos locais (UI)
 
     var localStatusBadge: String {
-        localModelStore.downloadedCount > 0 ? "Pronto" : "Não configurado"
+        totalDownloadedLocalModels > 0 ? "Pronto" : "Não configurado"
     }
 
     var localStatusIsReady: Bool {
-        localModelStore.downloadedCount > 0
+        totalDownloadedLocalModels > 0
+    }
+
+    private var totalDownloadedLocalModels: Int {
+        localModelStore.downloadedCount + (parakeetModelStore.isDownloaded ? 1 : 0)
     }
 
     var selectedLocalModelDisplayName: String {
-        guard localModelStore.isDownloaded(selectedLocalModel) else {
+        guard isLocalModelDownloaded(selectedLocalModel) else {
             return "Nenhum"
         }
         return selectedLocalModel.displayName
@@ -341,70 +348,151 @@ final class SettingsViewModel {
     }
 
     var storageSummaryLabel: String {
-        localModelStore.totalOnDiskBytes.voiceIAByteCountLabel
+        let total = localModelStore.totalOnDiskBytes + parakeetModelStore.onDiskByteCount
+        return total.voiceIAByteCountLabel
     }
 
     var downloadsFooterLabel: String {
-        let count = localModelStore.downloadedCount
+        let count = totalDownloadedLocalModels
         let size = storageSummaryLabel
         return "Downloads: \(size) · \(count) modelo\(count == 1 ? "" : "s")"
     }
 
-    func isLocalModelDownloaded(_ model: LocalWhisperModel) -> Bool {
-        localModelStore.isDownloaded(model)
+    func isLocalModelDownloaded(_ model: LocalTranscriptionModel) -> Bool {
+        switch model.engine {
+        case .whisper:
+            guard let whisper = model.whisperModel else { return false }
+            return localModelStore.isDownloaded(whisper)
+        case .parakeet:
+            return parakeetModelStore.isDownloaded
+        }
     }
 
-    func isLocalModelDownloading(_ model: LocalWhisperModel) -> Bool {
-        localModelStore.downloading.contains(model)
+    func isLocalModelDownloading(_ model: LocalTranscriptionModel) -> Bool {
+        switch model.engine {
+        case .whisper:
+            guard let whisper = model.whisperModel else { return false }
+            return localModelStore.downloading.contains(whisper)
+        case .parakeet:
+            return parakeetModelStore.isDownloading
+        }
     }
 
-    func downloadProgress(for model: LocalWhisperModel) -> Double {
-        localModelStore.fraction(for: model)
+    func detailedDownloadProgress(for model: LocalTranscriptionModel) -> (fraction: Double, percentLabel: String, speedLabel: String, sizeLabel: String)? {
+        switch model.engine {
+        case .whisper:
+            guard let whisper = model.whisperModel,
+                  let progress = localModelStore.progress(for: whisper) else {
+                return nil
+            }
+            return (
+                progress.fractionCompleted,
+                progress.percentLabel,
+                progress.speedLabel,
+                progress.sizeLabel
+            )
+        case .parakeet:
+            guard let progress = parakeetModelStore.downloadProgress else { return nil }
+            return (
+                progress.fractionCompleted,
+                progress.percentLabel,
+                progress.speedLabel,
+                progress.sizeLabel
+            )
+        }
     }
 
-    func detailedDownloadProgress(for model: LocalWhisperModel) -> ModelDownloadProgress? {
-        localModelStore.progress(for: model)
-    }
-
-    func selectLocalModel(_ model: LocalWhisperModel) {
-        guard localModelStore.isDownloaded(model) else { return }
+    func selectLocalModel(_ model: LocalTranscriptionModel) {
+        guard isLocalModelDownloaded(model) else { return }
         selectedLocalModel = model
     }
 
-    func downloadLocalModel(_ model: LocalWhisperModel) {
-        localModelStore.download(model)
-        // Ao concluir, o store atualiza disco; selecionamos se ainda não há seleção baixada.
-        Task { @MainActor in
-            while localModelStore.downloading.contains(model) {
-                try? await Task.sleep(for: .milliseconds(200))
+    func downloadLocalModel(_ model: LocalTranscriptionModel) {
+        switch model.engine {
+        case .whisper:
+            guard let whisper = model.whisperModel else { return }
+            localModelStore.download(whisper)
+            Task { @MainActor in
+                while localModelStore.downloading.contains(whisper) {
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
+                if localModelStore.isDownloaded(whisper) {
+                    selectedLocalModel = model
+                    localModelStore.refreshDiskState()
+                }
             }
-            if localModelStore.isDownloaded(model) {
-                selectedLocalModel = model
-                localModelStore.refreshDiskState()
+        case .parakeet:
+            parakeetModelStore.download()
+            Task { @MainActor in
+                while parakeetModelStore.isDownloading {
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
+                if parakeetModelStore.isDownloaded {
+                    selectedLocalModel = model
+                    parakeetModelStore.refreshDiskState()
+                }
             }
         }
     }
 
-    func deleteLocalModel(_ model: LocalWhisperModel) {
+    func cancelLocalModelDownload(_ model: LocalTranscriptionModel) {
+        switch model.engine {
+        case .whisper:
+            guard let whisper = model.whisperModel else { return }
+            localModelStore.cancelDownload(whisper)
+        case .parakeet:
+            parakeetModelStore.cancelDownload()
+        }
+    }
+
+    func deleteLocalModel(_ model: LocalTranscriptionModel) {
         do {
-            // Libera da RAM antes de apagar o arquivo do disco.
             onTranscriptionPolicyChanged()
-            try localModelStore.delete(model)
+            switch model.engine {
+            case .whisper:
+                guard let whisper = model.whisperModel else { return }
+                try localModelStore.delete(whisper)
+            case .parakeet:
+                try parakeetModelStore.delete()
+            }
             if selectedLocalModel == model {
-                selectedLocalModel = localModelStore.downloadedModels.first ?? .largeV3
+                selectedLocalModel = firstDownloadedLocalModel() ?? .default
             }
         } catch {
-            localModelStore.reportError(error.localizedDescription)
+            switch model.engine {
+            case .whisper:
+                localModelStore.reportError(error.localizedDescription)
+            case .parakeet:
+                parakeetModelStore.reportError(error.localizedDescription)
+            }
         }
     }
 
     func deleteUnusedLocalModels() {
         do {
-            let keeping = localModelStore.isDownloaded(selectedLocalModel) ? selectedLocalModel : nil
-            try localModelStore.deleteUnused(keeping: keeping)
+            let keepingWhisper: LocalWhisperModel? = {
+                guard selectedLocalModel.engine == .whisper else { return nil }
+                return selectedLocalModel.whisperModel.flatMap {
+                    localModelStore.isDownloaded($0) ? $0 : nil
+                }
+            }()
+            try localModelStore.deleteUnused(keeping: keepingWhisper)
+
+            if selectedLocalModel.engine != .parakeet, parakeetModelStore.isDownloaded {
+                try parakeetModelStore.delete()
+            }
         } catch {
             localModelStore.reportError(error.localizedDescription)
         }
+    }
+
+    private func firstDownloadedLocalModel() -> LocalTranscriptionModel? {
+        LocalTranscriptionModel.allCases.first(where: isLocalModelDownloaded)
+    }
+
+    func refreshLocalModelDiskState() {
+        localModelStore.refreshDiskState()
+        parakeetModelStore.refreshDiskState()
     }
 
     // MARK: - Permissões e pastas

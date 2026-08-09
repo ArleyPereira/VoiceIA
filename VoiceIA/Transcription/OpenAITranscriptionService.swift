@@ -15,7 +15,8 @@ final class OpenAITranscriptionService: TranscriptionService, @unchecked Sendabl
         self.session = session
     }
 
-    func transcribe(audioURL: URL) async throws -> String {
+    func transcribe(audioURL: URL, pcmSamples: [Float]? = nil) async throws -> String {
+        // OpenAI sempre envia o arquivo; PCM em memória não se aplica aqui.
         let testMode = await MainActor.run { settings.isTestModeEnabled }
         if testMode {
             logger.info("Modo teste ativo — transcrição mock, sem chamada à OpenAI.")
