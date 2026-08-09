@@ -6,6 +6,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case models
     case transcription
+    case history
     case recordings
 
     var id: String { rawValue }
@@ -15,6 +16,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return "Geral"
         case .models: return "Modelos"
         case .transcription: return "Transcrição"
+        case .history: return "Histórico"
         case .recordings: return "Gravações"
         }
     }
@@ -24,6 +26,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return "slider.horizontal.3"
         case .models: return "sparkles"
         case .transcription: return "waveform"
+        case .history: return "clock.arrow.circlepath"
         case .recordings: return "folder.fill"
         }
     }
@@ -33,6 +36,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return "Atalho de ditado e permissões do macOS."
         case .models: return "API OpenAI e modelos locais Whisper."
         case .transcription: return "Idioma e modelo usados no ditado."
+        case .history: return "Transcrições salvas neste Mac."
         case .recordings: return "O que fazer com os arquivos de áudio."
         }
     }
@@ -164,6 +168,8 @@ struct SettingsView: View {
                     modelsTab
                 case .transcription:
                     transcriptionTab
+                case .history:
+                    HistorySettingsView(viewModel: viewModel)
                 case .recordings:
                     recordingsTab
                 }

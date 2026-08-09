@@ -50,6 +50,10 @@ enum ModelsPane: String, CaseIterable, Identifiable {
 final class SettingsViewModel {
     private let settings: AppSettings
     let localModelStore: LocalWhisperModelStore
+    let historyStore: TranscriptionHistoryStore
+
+    /// Janela AppKit que hospeda as configurações (para centralizar diálogos filhos).
+    weak var hostWindow: NSWindow?
 
     /// Notifica o AppState para liberar o Whisper da memória quando a política muda.
     var onTranscriptionPolicyChanged: () -> Void
@@ -80,11 +84,13 @@ final class SettingsViewModel {
     init(
         settings: AppSettings,
         localModelStore: LocalWhisperModelStore? = nil,
+        historyStore: TranscriptionHistoryStore? = nil,
         onTranscriptionPolicyChanged: @escaping () -> Void = {},
         onAppearanceThemeChanged: @escaping () -> Void = {}
     ) {
         self.settings = settings
         self.localModelStore = localModelStore ?? .shared
+        self.historyStore = historyStore ?? .shared
         self.onTranscriptionPolicyChanged = onTranscriptionPolicyChanged
         self.onAppearanceThemeChanged = onAppearanceThemeChanged
         settings.refreshAPIKeyStatus()
@@ -133,6 +139,30 @@ final class SettingsViewModel {
     var keepRecordingsAfterTranscription: Bool {
         get { settings.keepRecordingsAfterTranscription }
         set { settings.keepRecordingsAfterTranscription = newValue }
+    }
+
+    /// Quando `true`, ditagens reais entram no histórico local.
+    var isTranscriptionHistoryEnabled: Bool {
+        get { settings.isTranscriptionHistoryEnabled }
+        set { settings.isTranscriptionHistoryEnabled = newValue }
+    }
+
+    var historyEntries: [TranscriptionHistoryEntry] {
+        historyStore.entries
+    }
+
+    func deleteHistoryEntry(_ id: UUID) {
+        historyStore.delete(id: id)
+    }
+
+    func deleteAllHistory() {
+        historyStore.deleteAll()
+    }
+
+    func copyHistoryEntry(_ entry: TranscriptionHistoryEntry) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(entry.text, forType: .string)
     }
 
     var useLocalWhisperGPU: Bool {

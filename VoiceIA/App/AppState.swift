@@ -25,6 +25,9 @@ final class AppState {
     /// Configurações (API key no Keychain + idioma + guards de crédito).
     let settings: AppSettings
 
+    /// Histórico local de transcrições.
+    let historyStore: TranscriptionHistoryStore
+
     /// Nível de áudio espelhado no MainActor para animar a waveform.
     var displayedAudioLevel: Float = 0
 
@@ -60,7 +63,8 @@ final class AppState {
         accessibilityService: any AccessibilityServiceProtocol = AccessibilityService(),
         textInsertionService: (any TextInsertionService)? = nil,
         settings: AppSettings? = nil,
-        transcriptionService: (any TranscriptionService)? = nil
+        transcriptionService: (any TranscriptionService)? = nil,
+        historyStore: TranscriptionHistoryStore? = nil
     ) {
         self.audioRecorder = audioRecorder
         self.hotkeyService = hotkeyService
@@ -69,6 +73,7 @@ final class AppState {
             ?? DefaultTextInsertionService(accessibilityService: accessibilityService)
         let resolvedSettings = settings ?? AppSettings()
         self.settings = resolvedSettings
+        self.historyStore = historyStore ?? .shared
         self.transcriptionService = transcriptionService
             ?? CompositeTranscriptionService(settings: resolvedSettings)
         refreshAccessibilityStatus()
@@ -77,7 +82,10 @@ final class AppState {
 
     /// Abre a janela de Configurações (API key + idioma).
     func openSettingsWindow() {
-        settingsWindowController.show(settings: settings) { [weak self] in
+        settingsWindowController.show(
+            settings: settings,
+            historyStore: historyStore
+        ) { [weak self] in
             self?.releaseLocalWhisperResources()
         }
     }
@@ -433,6 +441,7 @@ final class AppState {
             return
         }
 
+        recordTranscriptionHistoryIfNeeded(transcribed)
         await insertTranscribedText(transcribed)
 
         if !settings.keepRecordingsAfterTranscription {
@@ -441,6 +450,16 @@ final class AppState {
                 lastRecordingURL = nil
             }
         }
+    }
+
+    /// Salva no histórico local quando a captura está ligada e não é modo teste.
+    private func recordTranscriptionHistoryIfNeeded(_ text: String) {
+        guard settings.isTranscriptionHistoryEnabled else { return }
+        guard !settings.isTestModeEnabled else { return }
+        let duration = accumulatedRecordingDuration > 0
+            ? accumulatedRecordingDuration
+            : lastCaptureDiagnostics?.durationSeconds
+        historyStore.append(text: text, durationSeconds: duration)
     }
 
     private func insertTranscribedText(_ text: String) async {

@@ -16,7 +16,11 @@ final class SettingsWindowController {
     ///
     /// - Parameter onTranscriptionPolicyChanged: chamado quando modo teste,
     ///   backend local, modelo ou GPU mudam — para liberar o Whisper da memória.
-    func show(settings: AppSettings, onTranscriptionPolicyChanged: @escaping () -> Void = {}) {
+    func show(
+        settings: AppSettings,
+        historyStore: TranscriptionHistoryStore = .shared,
+        onTranscriptionPolicyChanged: @escaping () -> Void = {}
+    ) {
         self.settings = settings
         settings.refreshAPIKeyStatus()
 
@@ -30,6 +34,7 @@ final class SettingsWindowController {
         } else {
             let viewModel = SettingsViewModel(
                 settings: settings,
+                historyStore: historyStore,
                 onTranscriptionPolicyChanged: onTranscriptionPolicyChanged,
                 onAppearanceThemeChanged: applyTheme
             )
@@ -56,9 +61,12 @@ final class SettingsWindowController {
                 self?.handleClosed()
             }
             self.window = window
+            viewModel.hostWindow = window
             startObservingSystemAppearance()
         }
 
+        // Reuso: garante referência atualizada da janela.
+        viewModel?.hostWindow = window
         enforceMinimumWindowSize()
         applyAppearanceTheme()
 

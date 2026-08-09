@@ -13,6 +13,7 @@ final class AppSettings {
         static let selectedLocalWhisperModel = "settings.selectedLocalWhisperModel"
         static let transcriptionBackend = "settings.transcriptionBackend"
         static let appearanceTheme = "settings.appearanceTheme"
+        static let isTranscriptionHistoryEnabled = "settings.isTranscriptionHistoryEnabled"
     }
 
     private let apiKeyStore: any APIKeyProvider
@@ -68,6 +69,13 @@ final class AppSettings {
         }
     }
 
+    /// Quando `true`, cada ditagem real é salva no histórico local.
+    var isTranscriptionHistoryEnabled: Bool {
+        didSet {
+            defaults.set(isTranscriptionHistoryEnabled, forKey: DefaultsKey.isTranscriptionHistoryEnabled)
+        }
+    }
+
     /// Indica se existe API key salva no Keychain (sem expor o valor).
     private(set) var hasAPIKey: Bool
 
@@ -108,6 +116,12 @@ final class AppSettings {
             self.appearanceTheme = storedTheme
         } else {
             self.appearanceTheme = AppAppearanceTheme.system.rawValue
+        }
+
+        if defaults.object(forKey: DefaultsKey.isTranscriptionHistoryEnabled) == nil {
+            self.isTranscriptionHistoryEnabled = true
+        } else {
+            self.isTranscriptionHistoryEnabled = defaults.bool(forKey: DefaultsKey.isTranscriptionHistoryEnabled)
         }
 
         self.hasAPIKey = apiKeyStore.hasAPIKey
