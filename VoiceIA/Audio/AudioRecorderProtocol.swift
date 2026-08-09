@@ -26,6 +26,12 @@ protocol AudioRecorderProtocol: AnyObject {
     /// Encerra a gravação e devolve o URL do arquivo gerado.
     func stopRecording() async throws -> URL
 
+    /// Consome o PCM 16 kHz mono acumulado durante a última captura.
+    ///
+    /// Evita o roundtrip AAC→PCM na transcrição local (Parakeet/Whisper).
+    /// Devolve `nil` se não houver amostras.
+    func consumePCMSamples() -> [Float]?
+
     /// Remove um arquivo de gravação temporário.
     func deleteRecording(at url: URL) throws
 }

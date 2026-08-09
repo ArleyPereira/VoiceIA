@@ -51,7 +51,7 @@ final class AppSettings {
         }
     }
 
-    /// ID do modelo Whisper local selecionado (`LocalWhisperModel.rawValue`).
+    /// ID do modelo local selecionado (`LocalTranscriptionModel.rawValue`).
     var selectedLocalWhisperModel: String {
         didSet {
             defaults.set(selectedLocalWhisperModel, forKey: DefaultsKey.selectedLocalWhisperModel)
@@ -128,9 +128,13 @@ final class AppSettings {
         }
 
         let storedModel = defaults.string(forKey: DefaultsKey.selectedLocalWhisperModel)
-        self.selectedLocalWhisperModel = storedModel?.isEmpty == false
-            ? storedModel!
-            : LocalWhisperModel.largeV3.rawValue
+        if let storedModel,
+           !storedModel.isEmpty,
+           LocalTranscriptionModel(rawValue: storedModel) != nil {
+            self.selectedLocalWhisperModel = storedModel
+        } else {
+            self.selectedLocalWhisperModel = LocalTranscriptionModel.default.rawValue
+        }
 
         let storedBackend = defaults.string(forKey: DefaultsKey.transcriptionBackend)
         self.transcriptionBackend = (storedBackend == "local") ? "local" : "api"

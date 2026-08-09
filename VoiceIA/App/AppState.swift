@@ -80,6 +80,13 @@ final class AppState {
             ?? CompositeTranscriptionService(settings: resolvedSettings)
         refreshAccessibilityStatus()
         startHotkeyMonitoring()
+        warmLocalModelsIfNeeded()
+    }
+
+    /// Pré-aquece Parakeet/Whisper quando o backend local está ativo.
+    func warmLocalModelsIfNeeded() {
+        guard let composite = transcriptionService as? CompositeTranscriptionService else { return }
+        composite.warmLocalModelsIfNeeded()
     }
 
     /// Abre a janela de Configurações (API key + idioma).
@@ -89,6 +96,7 @@ final class AppState {
             historyStore: historyStore,
             onTranscriptionPolicyChanged: { [weak self] in
                 self?.releaseLocalWhisperResources()
+                self?.warmLocalModelsIfNeeded()
             },
             onRecordingHUDStyleChanged: { [weak self] in
                 guard let self else { return }
@@ -107,11 +115,11 @@ final class AppState {
         )
     }
 
-    /// Libera o Whisper local da RAM/GPU quando o ditado não vai usá-lo.
+    /// Libera Whisper/Parakeet locais da RAM/GPU quando o ditado não vai usá-los.
     ///
-    /// O modelo fica em cache depois da primeira transcrição local (~GB). Ao
-    /// ligar o modo teste, voltar para a API ou trocar modelo/GPU, soltamos a
-    /// referência para o `deinit` liberar o contexto GGML.
+    /// Whisper fica em cache depois da primeira transcrição (~GB). Parakeet
+    /// permanece quente entre ditagens. Ao ligar o modo teste, voltar para a API
+    /// ou trocar modelo/GPU, soltamos as referências.
     func releaseLocalWhisperResources() {
         guard let composite = transcriptionService as? CompositeTranscriptionService else { return }
         composite.unloadCachedLocalModel()
@@ -247,6 +255,9 @@ final class AppState {
             failWithPermission(gateError)
             return
         }
+
+        // Enquanto o usuário fala, o Parakeet já carrega/especializa o ANE.
+        warmLocalModelsIfNeeded()
 
         do {
             captureFocusBeforeRecordingBestEffort()
@@ -461,9 +472,17 @@ final class AppState {
 
         recordingState = .transcribing
 
+        let pcmSamples = audioRecorder.consumePCMSamples()
         let transcribed: String
         do {
-            transcribed = try await transcriptionService.transcribe(audioURL: audioURL)
+            let asrStart = Date()
+            transcribed = try await transcriptionService.transcribe(
+                audioURL: audioURL,
+                pcmSamples: pcmSamples
+            )
+            logger.notice(
+                "ASR concluiu em \(String(format: "%.0f", Date().timeIntervalSince(asrStart) * 1000)) ms."
+            )
             lastTranscriptionText = transcribed
         } catch let error as VoiceInputError where error == .noSpeechDetected {
             // Silêncio: não insere, não abre diálogo de resgate — só avisa de leve.
@@ -561,9 +580,17 @@ final class AppState {
     private func dictationReadinessError() -> VoiceInputError? {
         if settings.isTestModeEnabled { return nil }
         if settings.transcriptionBackend == "local" {
-            let model = LocalWhisperModel(rawValue: settings.selectedLocalWhisperModel) ?? .largeV3
-            if !LocalWhisperModelStore.shared.isDownloaded(model) {
-                return .localModelMissing
+            let model = LocalTranscriptionModel(rawValue: settings.selectedLocalWhisperModel) ?? .default
+            switch model.engine {
+            case .whisper:
+                guard let whisper = model.whisperModel,
+                      LocalWhisperModelStore.shared.isDownloaded(whisper) else {
+                    return .localModelMissing
+                }
+            case .parakeet:
+                guard LocalParakeetModelStore.shared.isDownloaded else {
+                    return .localModelMissing
+                }
             }
             return nil
         }

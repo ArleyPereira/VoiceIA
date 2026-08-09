@@ -46,6 +46,8 @@ final class AudioRecorder: AudioRecorderProtocol, @unchecked Sendable {
     private var deviceName = "—"
     private var levelValue: Float = 0
     private var runtimeErrorObserver: NSObjectProtocol?
+    /// PCM 16 kHz mono da captura atual — usado pela ASR local sem decodificar o `.m4a`.
+    private var pcmSamples: [Float] = []
 
     private(set) var lastDiagnostics: CaptureDiagnostics = .empty
 
@@ -147,6 +149,14 @@ final class AudioRecorder: AudioRecorderProtocol, @unchecked Sendable {
         try FileManager.default.removeItem(at: url)
     }
 
+    func consumePCMSamples() -> [Float]? {
+        lock.lock()
+        let samples = pcmSamples
+        pcmSamples = []
+        lock.unlock()
+        return samples.isEmpty ? nil : samples
+    }
+
     /// Lê o nível atual e alimenta o medidor da waveform.
     @discardableResult
     func pollMeterLevel() -> Float {
@@ -196,6 +206,7 @@ final class AudioRecorder: AudioRecorderProtocol, @unchecked Sendable {
         observedPeak = 0
         levelValue = 0
         deviceName = device.localizedName
+        pcmSamples.removeAll(keepingCapacity: true)
         sessionOpen = true
         capturing = true
         lock.unlock()
@@ -433,10 +444,13 @@ final class AudioRecorder: AudioRecorderProtocol, @unchecked Sendable {
         let scale = 1 / Float(Int16.max)
         var sumOfSquares: Float = 0
         var peak: Float = 0
+        var floats = [Float](repeating: 0, count: sampleCount)
         for index in 0..<sampleCount {
-            let sample = abs(Float(samples[index])) * scale
-            sumOfSquares += sample * sample
-            peak = max(peak, sample)
+            let sample = Float(samples[index]) * scale
+            floats[index] = sample
+            let absolute = abs(sample)
+            sumOfSquares += absolute * absolute
+            peak = max(peak, absolute)
         }
 
         let rms = (sumOfSquares / Float(sampleCount)).squareRoot()
@@ -444,6 +458,7 @@ final class AudioRecorder: AudioRecorderProtocol, @unchecked Sendable {
         let normalized = min(1, (max(rms * 12, peak * 4)).squareRoot())
 
         lock.lock()
+        pcmSamples.append(contentsOf: floats)
         observedPeak = max(observedPeak, peak)
         levelValue += (normalized - levelValue) * (normalized > levelValue ? 0.6 : 0.25)
         let level = levelValue

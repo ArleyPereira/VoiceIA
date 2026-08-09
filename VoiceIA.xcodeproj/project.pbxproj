@@ -67,6 +67,7 @@
 			name = VoiceIA;
 			packageProductDependencies = (
 				A1WMETALKIT30279E28007F25AB /* WhisperMetalKit */,
+				A1FLUIDKIT30279E28007F25AB /* FluidAudio */,
 			);
 			productName = VoiceIA;
 			productReference = 8D37C2F830279E26007F25AB /* VoiceIA.app */;
@@ -98,6 +99,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A1WMETALREF30279E28007F25AB /* XCRemoteSwiftPackageReference "WhisperMetalKit" */,
+				A1FLUIDREF30279E28007F25AB /* XCRemoteSwiftPackageReference "FluidAudio" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 8D37C2F930279E26007F25AB /* Products */;
@@ -361,6 +363,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		A1FLUIDREF30279E28007F25AB /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/FluidInference/FluidAudio.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.7.0;
+			};
+		};
 		A1WMETALREF30279E28007F25AB /* XCRemoteSwiftPackageReference "WhisperMetalKit" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/carloshpdoc/WhisperMetalKit.git";
@@ -372,6 +382,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		A1FLUIDKIT30279E28007F25AB /* FluidAudio */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1FLUIDREF30279E28007F25AB /* XCRemoteSwiftPackageReference "FluidAudio" */;
+			productName = FluidAudio;
+		};
 		A1WMETALKIT30279E28007F25AB /* WhisperMetalKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = A1WMETALREF30279E28007F25AB /* XCRemoteSwiftPackageReference "WhisperMetalKit" */;
