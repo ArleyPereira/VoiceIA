@@ -38,6 +38,50 @@ enum ParakeetFastDownloader {
 
     private static let maxAttemptsPerSegment = 3
 
+    // MARK: - `.partial` desta execução
+
+    /// Os `.partial` criados por **este** download, e o único conjunto que
+    /// podemos apagar com segurança.
+    ///
+    /// O diretório de cache é compartilhado com outros apps que usam FluidAudio
+    /// (o Spokenly, por exemplo), e o `FileDownloader` dele usa a mesma extensão
+    /// `.partial` — só que ali ela é ponto de retomada por `Range`, projetado
+    /// para sobreviver inclusive à troca de processo. Varrer o diretório por
+    /// extensão jogaria fora o download de outro app.
+    private static let activePartialsLock = NSLock()
+    nonisolated(unsafe) private static var activePartials: Set<URL> = []
+
+    private static func trackPartial(_ url: URL) {
+        activePartialsLock.lock()
+        activePartials.insert(url)
+        activePartialsLock.unlock()
+    }
+
+    private static func untrackPartials(_ urls: [URL]) {
+        activePartialsLock.lock()
+        for url in urls {
+            activePartials.remove(url)
+        }
+        activePartialsLock.unlock()
+    }
+
+    /// Apaga os `.partial` desta execução.
+    ///
+    /// Síncrono de propósito: o único chamador é `applicationWillTerminate`, e
+    /// ali qualquer `Task` ficaria na fila enquanto o processo morre.
+    static func purgeActivePartials() {
+        activePartialsLock.lock()
+        let urls = activePartials
+        activePartials = []
+        activePartialsLock.unlock()
+
+        guard !urls.isEmpty else { return }
+        for url in urls {
+            try? FileManager.default.removeItem(at: url)
+        }
+        logger.notice("Descartados \(urls.count) `.partial` do download interrompido.")
+    }
+
     struct RemoteFile: Sendable {
         let path: String
         let size: Int64
@@ -202,6 +246,7 @@ enum ParakeetFastDownloader {
                 try FileManager.default.removeItem(at: partial)
             }
             FileManager.default.createFile(atPath: partial.path, contents: nil)
+            trackPartial(partial)
 
             // O Hugging Face responde 500 em arquivos vazios; criar local resolve.
             if file.size == 0 {
@@ -361,16 +406,18 @@ enum ParakeetFastDownloader {
                 try FileManager.default.removeItem(at: destination)
             }
             try FileManager.default.moveItem(at: partial, to: destination)
+            untrackPartials([partial])
         }
     }
 
     private static func discardPartials(for files: [RemoteFile], in cacheDirectory: URL) {
-        for file in files {
-            let partial = cacheDirectory
-                .appendingPathComponent(file.path)
-                .appendingPathExtension("partial")
+        let partials = files.map {
+            cacheDirectory.appendingPathComponent($0.path).appendingPathExtension("partial")
+        }
+        for partial in partials {
             try? FileManager.default.removeItem(at: partial)
         }
+        untrackPartials(partials)
     }
 
     private static func localSize(of url: URL) -> Int64 {
