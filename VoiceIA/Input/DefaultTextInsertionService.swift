@@ -104,6 +104,17 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         logDiagnostics(target: target, captured: captured, live: liveTarget)
 
         let chromiumLike = isChromiumLike(target)
+        let bundleID = NSRunningApplication(processIdentifier: target.processID)?
+            .bundleIdentifier ?? "desconhecido"
+        // Nunca logamos a ditagem em si — só o tamanho, que é a variável que
+        // separa o caso que funciona do que falha.
+        logger.notice(
+            """
+            Inserção: \(trimmed.count, privacy: .public) chars, \
+            app \(bundleID, privacy: .public), papel \(target.role ?? "—", privacy: .public), \
+            chromiumLike=\(chromiumLike, privacy: .public)
+            """
+        )
 
         // No Chromium/Electron o `AXSelectedText` pode “aceitar” e até inserir
         // sem o valor AX refletir direito. Se seguirmos para ⌘V/Unicode depois,
@@ -111,11 +122,19 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         //
         // Em campo nativo, porém, escrever no AX é síncrono e não toca no
         // clipboard: é o caminho mais rápido que existe aqui.
-        if !chromiumLike, insertViaAccessibilityVerified(trimmed, into: target) {
-            lastMethod = .accessibility
-            logger.notice("Inserido via Accessibility em \(target.summary, privacy: .public)")
-            return
+        if !chromiumLike {
+            if insertViaAccessibilityVerified(trimmed, into: target) {
+                lastMethod = .accessibility
+                logger.notice("Inserido via Accessibility em \(target.summary, privacy: .public)")
+                return
+            }
+            logger.notice("Accessibility (AXSelectedText) não confirmou; seguindo para ⌘V.")
         }
+
+        // Observa o campo depois que a inserção retornar. É o log decisivo para
+        // "texto no histórico mas não no input": diz se o texto chegou tarde
+        // (e quando) ou se nunca chegou.
+        auditInsertion(target: target, expected: trimmed)
 
         // ⌘V é O(1): uma ditagem de 600 caracteres custa o mesmo que uma de 20.
         // A digitação Unicode manda 2 eventos a cada 16 caracteres e fica cada
@@ -131,8 +150,15 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
             if chromiumLike {
                 // Falso negativo clássico: o texto já foi para o contenteditable,
                 // mas o AXValue continua no placeholder. Inserir de novo duplica.
+                //
+                // Só que "assumir" também esconde uma falha real: quando o ⌘V não
+                // entra mesmo, nada é reportado e o texto some sem barra de resgate.
+                // A auditoria acima diz qual dos dois aconteceu.
                 logger.notice(
-                    "⌘V em app Chromium sem confirmação AX — assumindo sucesso (evita duplicar)."
+                    """
+                    ⌘V em app Chromium SEM confirmação AX — assumindo sucesso sem verificar \
+                    (\(trimmed.count, privacy: .public) chars). Confira o resultado da auditoria.
+                    """
                 )
                 return
             }
@@ -145,6 +171,60 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
             logger.notice("Inserido via digitação Unicode.")
         case .rejected:
             throw VoiceInputError.textInsertionFailed
+        }
+    }
+
+    /// Acompanha o campo por alguns segundos **depois** da inserção retornar.
+    ///
+    /// Diagnóstico puro: não interfere no fluxo nem no tempo dele — justamente
+    /// porque o tempo é a variável suspeita quando a ditagem é longa. Registra o
+    /// tamanho do valor AX ao longo do tempo, então dá para distinguir três
+    /// casos que hoje terminam iguais no log: o texto entrou na hora, entrou
+    /// tarde (depois de já termos devolvido o clipboard), ou nunca entrou.
+    private func auditInsertion(target: FocusedElement, expected: String) {
+        let placeholder = axPlaceholder(of: target.axElement)
+        let baselineRaw = copyStringAttribute(target.axElement, kAXValueAttribute as CFString)
+        let baseline = strippingPlaceholder(from: baselineRaw, placeholder: placeholder).count
+        let expectedCount = expected.count
+        let start = DispatchTime.now()
+
+        Task { [weak self] in
+            guard let self else { return }
+            var previous = -1
+
+            for delay in [400, 800, 1_500, 3_000] {
+                let elapsedMs = Int(Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000)
+                try? await Task.sleep(for: .milliseconds(max(0, delay - elapsedMs)))
+
+                let raw = self.copyStringAttribute(target.axElement, kAXValueAttribute as CFString)
+                guard let raw else {
+                    self.logger.notice("Auditoria +\(delay, privacy: .public) ms: campo não expõe valor AX.")
+                    return
+                }
+                let current = self.strippingPlaceholder(from: raw, placeholder: placeholder)
+                let contains = current.contains(expected)
+
+                // Só loga quando algo muda, para não encher o Console.
+                if current.count != previous {
+                    previous = current.count
+                    self.logger.notice(
+                        """
+                        Auditoria +\(delay, privacy: .public) ms: campo \(current.count, privacy: .public) chars \
+                        (era \(baseline, privacy: .public), esperado +\(expectedCount, privacy: .public)), \
+                        contém a ditagem=\(contains, privacy: .public)
+                        """
+                    )
+                }
+
+                if contains { return }
+            }
+
+            self.logger.error(
+                """
+                Auditoria: a ditagem de \(expectedCount, privacy: .public) chars NÃO apareceu no campo \
+                em 3 s — inserção falhou em silêncio.
+                """
+            )
         }
     }
 
@@ -538,7 +618,17 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         let beforeRaw = copyStringAttribute(target.axElement, kAXValueAttribute as CFString)
         let before = strippingPlaceholder(from: beforeRaw, placeholder: placeholder)
 
-        defer { snapshot.restore(into: pasteboard) }
+        let pasteStart = DispatchTime.now()
+        func elapsedMs() -> Int {
+            Int(Double(DispatchTime.now().uptimeNanoseconds - pasteStart.uptimeNanoseconds) / 1_000_000)
+        }
+
+        // O momento da devolução importa: se o app alvo ainda não tiver lido o
+        // clipboard, ele passa a ler o conteúdo antigo e a ditagem se perde.
+        defer {
+            snapshot.restore(into: pasteboard)
+            logger.notice("Clipboard devolvido ao usuário em +\(elapsedMs(), privacy: .public) ms.")
+        }
 
         try? await activateAndWait(pid: target.processID)
 
@@ -554,20 +644,38 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
 
         // Marco da latência percebida: daqui em diante o texto já está no campo,
         // e o que vem depois só confirma e devolve o clipboard.
-        logger.notice("⌘V enviado — texto já entregue ao app.")
+        logger.notice(
+            """
+            ⌘V enviado em +\(elapsedMs(), privacy: .public) ms via \
+            \(self.lastMethod?.rawValue ?? "—", privacy: .public) — campo tinha \
+            \(before.count, privacy: .public) chars.
+            """
+        )
 
         // Settle antes de reler o campo e antes do `defer` devolver o clipboard:
         // o app alvo precisa consumir o ⌘V com a ditagem ainda lá. Isso roda
         // depois de as teclas terem chegado, então não atrasa o que o usuário vê.
         try? await Task.sleep(for: .milliseconds(220))
 
-        return verifyInsertion(
+        let check = verifyInsertion(
             in: target,
             beforeRaw: beforeRaw,
             before: before,
             inserted: text,
             placeholder: placeholder
         )
+
+        let afterRaw = copyStringAttribute(target.axElement, kAXValueAttribute as CFString)
+        let after = strippingPlaceholder(from: afterRaw, placeholder: placeholder)
+        logger.notice(
+            """
+            Verificação do ⌘V em +\(elapsedMs(), privacy: .public) ms: \(String(describing: check), privacy: .public) \
+            — campo \(before.count, privacy: .public) → \(after.count, privacy: .public) chars, \
+            colados \(text.count, privacy: .public).
+            """
+        )
+
+        return check
     }
 
     /// Ativa o app alvo e aguarda ele virar frontmost de fato.
