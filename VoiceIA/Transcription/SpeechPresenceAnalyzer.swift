@@ -15,7 +15,7 @@ struct SpeechEnergyStats {
     var isEmpty: Bool { sampleCount == 0 }
 }
 
-/// Detecta silêncio / alucinações típicas do Whisper antes de inserir texto.
+/// Decide se a captura tem energia de fala suficiente para valer transcrição.
 enum SpeechPresenceAnalyzer {
     /// RMS abaixo disso + pico baixo → gravação praticamente muda.
     private static let silenceRMSThreshold: Double = 0.010
@@ -25,34 +25,6 @@ enum SpeechPresenceAnalyzer {
     private static let minimumLoudFrameRatio: Double = 0.012
     static let loudSampleThreshold: Float = 0.022
 
-    /// Frases curtas que o Whisper costuma inventar no silêncio (PT/EN).
-    private static let hallucinationPhrases: Set<String> = [
-        "obrigado",
-        "obrigada",
-        "obrigado.",
-        "thanks",
-        "thank you",
-        "thank you.",
-        "thanks for watching",
-        "thank you for watching",
-        "thanks for watching.",
-        "legenda",
-        "legendas",
-        "legendas pelo trabalho de jose",
-        "subtitles",
-        "subtitle",
-        "amém",
-        "amen",
-        "you",
-        "the end",
-        "fim",
-        "inscreva-se",
-        "subscribe",
-        "music",
-        "applause",
-        "silêncio",
-        "silence"
-    ]
 
     /// `true` se o PCM 16 kHz mono tem energia suficiente de fala.
     ///
@@ -91,37 +63,5 @@ enum SpeechPresenceAnalyzer {
             return false
         }
         return true
-    }
-
-    /// Normaliza o texto para comparar com alucinações conhecidas.
-    static func normalizedTranscription(_ text: String) -> String {
-        let folded = text
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        let scalars = folded.unicodeScalars.map { scalar -> Character in
-            if CharacterSet.alphanumerics.contains(scalar) || scalar == " " {
-                return Character(scalar)
-            }
-            return " "
-        }
-        let collapsed = String(scalars)
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
-        return collapsed
-    }
-
-    /// `true` se o texto parece alucinação clássica de silêncio do Whisper.
-    static func looksLikeSilenceHallucination(_ text: String) -> Bool {
-        let normalized = normalizedTranscription(text)
-        guard !normalized.isEmpty else { return true }
-        if hallucinationPhrases.contains(normalized) {
-            return true
-        }
-        // Uma única palavra muito curta e genérica.
-        let tokens = normalized.split(separator: " ")
-        if tokens.count == 1, let only = tokens.first, only.count <= 3 {
-            return ["ok", "ah", "oh", "uh", "hm", "um", "eh"].contains(String(only))
-        }
-        return false
     }
 }

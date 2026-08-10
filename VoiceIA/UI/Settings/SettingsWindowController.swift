@@ -15,7 +15,7 @@ final class SettingsWindowController {
     /// Mostra (ou reusa) a janela de configurações.
     ///
     /// - Parameter onTranscriptionPolicyChanged: chamado quando modo teste,
-    ///   backend local, modelo ou GPU mudam — para liberar o Whisper da memória.
+    ///   backend local ou modo teste mudam — para liberar o modelo da memória.
     /// - Parameter onRecordingHUDStyleChanged: reaplica a barra flutuante na hora.
     /// - Parameter onDictationHotkeyChanged: re-registra o atalho global.
     /// - Parameter onHotkeyCaptureSessionChanged: pausa/retoma o atalho durante a captura.

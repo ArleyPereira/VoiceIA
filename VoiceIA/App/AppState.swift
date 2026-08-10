@@ -83,7 +83,7 @@ final class AppState {
         warmLocalModelsIfNeeded()
     }
 
-    /// Pré-aquece Parakeet/Whisper quando o backend local está ativo.
+    /// Pré-aquece o Parakeet quando o backend local está ativo.
     func warmLocalModelsIfNeeded() {
         guard let composite = transcriptionService as? CompositeTranscriptionService else { return }
         composite.warmLocalModelsIfNeeded()
@@ -95,7 +95,7 @@ final class AppState {
             settings: settings,
             historyStore: historyStore,
             onTranscriptionPolicyChanged: { [weak self] in
-                self?.releaseLocalWhisperResources()
+                self?.releaseLocalModelResources()
                 self?.warmLocalModelsIfNeeded()
             },
             onRecordingHUDStyleChanged: { [weak self] in
@@ -115,12 +115,11 @@ final class AppState {
         )
     }
 
-    /// Libera Whisper/Parakeet locais da RAM/GPU quando o ditado não vai usá-los.
+    /// Libera o Parakeet da RAM quando o ditado não vai mais usá-lo.
     ///
-    /// Whisper fica em cache depois da primeira transcrição (~GB). Parakeet
-    /// permanece quente entre ditagens. Ao ligar o modo teste, voltar para a API
-    /// ou trocar modelo/GPU, soltamos as referências.
-    func releaseLocalWhisperResources() {
+    /// Ele permanece quente entre ditagens; ao ligar o modo teste, voltar para a
+    /// API ou excluir o modelo, soltamos a referência.
+    func releaseLocalModelResources() {
         guard let composite = transcriptionService as? CompositeTranscriptionService else { return }
         composite.unloadCachedLocalModel()
     }
@@ -485,7 +484,7 @@ final class AppState {
         // PCM e sem pagar uma inferência inteira para não inserir nada.
         //
         // Só no caminho local: os limiares foram calibrados contra alucinação
-        // do Whisper, e o backend OpenAI nunca foi filtrado aqui.
+        // do modelo local, e o backend OpenAI nunca foi filtrado aqui.
         if !transcriptionNeedsAudioFile,
            !SpeechPresenceAnalyzer.hasSpeechEnergy(stats: capture.speechStats) {
             logger.notice("Ditagem sem fala detectada; nada foi inserido.")
@@ -659,17 +658,8 @@ final class AppState {
     private func dictationReadinessError() -> VoiceInputError? {
         if settings.isTestModeEnabled { return nil }
         if settings.transcriptionBackend == "local" {
-            let model = LocalTranscriptionModel(rawValue: settings.selectedLocalWhisperModel) ?? .default
-            switch model.engine {
-            case .whisper:
-                guard let whisper = model.whisperModel,
-                      LocalWhisperModelStore.shared.isDownloaded(whisper) else {
-                    return .localModelMissing
-                }
-            case .parakeet:
-                guard LocalParakeetModelStore.shared.isDownloaded else {
-                    return .localModelMissing
-                }
+            guard LocalParakeetModelStore.shared.isDownloaded else {
+                return .localModelMissing
             }
             return nil
         }

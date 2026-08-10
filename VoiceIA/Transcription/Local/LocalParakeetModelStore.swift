@@ -3,7 +3,7 @@ import FluidAudio
 import Observation
 import OSLog
 
-/// Progresso do download do Parakeet — mesmo padrão visual do Whisper.
+/// Progresso do download do Parakeet (percentual, velocidade e tamanho).
 struct ParakeetDownloadProgress: Sendable, Equatable {
     var fractionCompleted: Double
     var bytesReceived: Int64

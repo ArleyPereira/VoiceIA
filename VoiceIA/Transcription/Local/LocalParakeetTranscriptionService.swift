@@ -2,7 +2,6 @@ import CoreML
 import FluidAudio
 import Foundation
 import OSLog
-import WhisperMetalKit
 
 /// Transcrição local via NVIDIA Parakeet TDT 0.6B V3 (Core ML / FluidAudio).
 final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked Sendable {
@@ -44,19 +43,14 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
             throw VoiceInputError.localModelMissing
         }
 
-        let samples: [Float]
-        if let pcmSamples, !pcmSamples.isEmpty {
-            samples = pcmSamples
-            logger.notice(
-                "Parakeet: PCM em memória (\(samples.count) amostras, \(String(format: "%.2f", Double(samples.count) / 16_000.0))s)."
-            )
-        } else {
-            let decodeStart = Date()
-            samples = try WhisperAudio.samples(fromFile: audioURL)
-            logger.notice(
-                "Parakeet: decode do arquivo em \(String(format: "%.0f", Date().timeIntervalSince(decodeStart) * 1000)) ms."
-            )
+        // O ditado sempre entrega o PCM da captura; decodificar o `.m4a` seria
+        // pagar de novo por algo que já está em memória.
+        guard let samples = pcmSamples, !samples.isEmpty else {
+            throw VoiceInputError.emptyRecording
         }
+        logger.notice(
+            "Parakeet: PCM em memória (\(samples.count) amostras, \(String(format: "%.2f", Double(samples.count) / 16_000.0))s)."
+        )
 
         guard SpeechPresenceAnalyzer.hasSpeechEnergy(in: samples) else {
             logger.notice("Áudio sem energia de fala — ignorando.")

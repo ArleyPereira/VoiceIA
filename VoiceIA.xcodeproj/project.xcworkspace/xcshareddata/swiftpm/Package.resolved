@@ -1,5 +1,5 @@
 {
-  "originHash" : "3db9fcbc7b0be6d0baf89a6c73a29cbf62ece973391067050d9f3c37f62fa34f",
+  "originHash" : "d526b956b2941e51520eb1a181d281939054defb03feb9302533a12952391e2e",
   "pins" : [
     {
       "identity" : "fluidaudio",
@@ -8,15 +8,6 @@
       "state" : {
         "revision" : "19600a485baa4998812e4654b70d2bab8f2c9949",
         "version" : "0.15.5"
-      }
-    },
-    {
-      "identity" : "whispermetalkit",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/carloshpdoc/WhisperMetalKit.git",
-      "state" : {
-        "revision" : "f59f8b6d9cf6d31e86a61d5393fd6f396c890d45",
-        "version" : "0.1.0"
       }
     }
   ],

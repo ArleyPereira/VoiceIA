@@ -38,7 +38,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "Início automático, atalho e permissões do macOS."
         case .appearance: return "Tema da interface e visual da barra de gravação."
-        case .models: return "API OpenAI e modelos locais Whisper."
+        case .models: return "API OpenAI e modelo local."
         case .transcription: return "Idioma e modelo usados no ditado."
         case .history: return "Transcrições salvas neste Mac."
         case .recordings: return "O que fazer com os arquivos de áudio."

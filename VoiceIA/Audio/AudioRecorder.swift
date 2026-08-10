@@ -20,7 +20,7 @@ private final class CaptureDelegate: NSObject, AVCaptureAudioDataOutputSampleBuf
 /// Grava o microfone padrão do sistema em `.m4a` (AAC).
 ///
 /// A saída de captura é forçada para PCM 16 bits / 16 kHz / mono: é o formato
-/// esperado pelo Whisper e evita conversões implícitas no encoder AAC.
+/// esperado pelo Parakeet e evita conversões implícitas no encoder AAC.
 final class AudioRecorder: AudioRecorderProtocol, @unchecked Sendable {
     private static let sampleRate: Double = 16_000
 
