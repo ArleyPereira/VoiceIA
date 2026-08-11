@@ -25,6 +25,15 @@ final class AccessibilityService: AccessibilityServiceProtocol, @unchecked Senda
         AccessibilityPermission.requestAccess()
     }
 
+    /// Teto para cada consulta AX, em segundos.
+    ///
+    /// O padrão do sistema é 6 s. Um Electron ocupado — logo depois de receber
+    /// uma colagem grande, por exemplo — segura a resposta por muito tempo, e
+    /// uma verificação que deveria custar milissegundos trava o ditado inteiro.
+    /// Falhar rápido e reler é melhor do que esperar. (O Spokenly também define
+    /// esse timeout.)
+    private static let axMessagingTimeout: Float = 0.5
+
     func focusedElement() throws -> FocusedElement {
         guard isTrusted() else {
             throw VoiceInputError.accessibilityPermissionDenied
@@ -165,6 +174,10 @@ final class AccessibilityService: AccessibilityServiceProtocol, @unchecked Senda
     private func makeFocused(_ element: AXUIElement) -> FocusedElement {
         var pid: pid_t = 0
         AXUIElementGetPid(element, &pid)
+
+        // Vale para todas as consultas futuras neste elemento, inclusive as da
+        // verificação de inserção.
+        AXUIElementSetMessagingTimeout(element, Self.axMessagingTimeout)
 
         let focused = FocusedElement(
             axElement: element,

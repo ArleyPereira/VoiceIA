@@ -81,6 +81,18 @@ final class AppState {
         refreshAccessibilityStatus()
         startHotkeyMonitoring()
         warmLocalModelsIfNeeded()
+
+        // A entrega do texto é assíncrona: o ⌘V sai, e só segundos depois dá
+        // para afirmar que ele não chegou ao campo. Quando isso acontece, a
+        // ditagem não pode ficar sem saída.
+        self.textInsertionService.onInsertionLost = { [weak self] text in
+            Task { @MainActor in
+                guard let self else { return }
+                guard self.pendingDictationText == nil else { return }
+                self.logger.notice("Inserção se perdeu no app alvo; oferecendo o texto ao usuário.")
+                self.presentInsertionRescue(for: text, reason: .insertionRefused)
+            }
+        }
     }
 
     /// Pré-aquece o Parakeet quando o backend local está ativo.
