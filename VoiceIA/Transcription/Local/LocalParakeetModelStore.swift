@@ -3,7 +3,7 @@ import FluidAudio
 import Observation
 import OSLog
 
-/// Progresso do download do Parakeet — mesmo padrão visual do Whisper.
+/// Progresso do download do Parakeet (percentual, velocidade e tamanho).
 struct ParakeetDownloadProgress: Sendable, Equatable {
     var fractionCompleted: Double
     var bytesReceived: Int64
@@ -172,6 +172,12 @@ final class LocalParakeetModelStore {
         )
     }
 
+    /// Bytes do modelo instalado — ignora `.partial` e o sidecar `.etag`.
+    ///
+    /// Os `.partial` são pré-alocados no tamanho final do arquivo, então
+    /// contá-los faria o rótulo mostrar o pacote inteiro logo no começo do
+    /// download. E um órfão de force quit deixaria o número inflado para sempre,
+    /// sugerindo um modelo em disco que não dá para usar.
     private func directoryByteCount(at url: URL) -> Int64 {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(
@@ -184,6 +190,7 @@ final class LocalParakeetModelStore {
 
         var total: Int64 = 0
         for case let fileURL as URL in enumerator {
+            guard !["partial", "etag"].contains(fileURL.pathExtension) else { continue }
             guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
                   values.isRegularFile == true,
                   let size = values.fileSize else {
@@ -191,7 +198,6 @@ final class LocalParakeetModelStore {
             }
             total += Int64(size)
         }
-        // Conta `.partial` em curso (FluidAudio escreve aí durante o stream).
         return total
     }
 }

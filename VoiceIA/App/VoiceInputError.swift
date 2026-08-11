@@ -47,7 +47,7 @@ enum VoiceInputError: LocalizedError, Equatable {
         case .busy:
             return "Aguarde a transcrição/inserção atual terminar."
         case .localModelMissing:
-            return "Baixe um modelo Whisper em Configurações → Modelos → Local antes de usar a transcrição local."
+            return "Baixe o modelo local em Configurações → Modelos → Local antes de usar a transcrição local."
         case .noSpeechDetected:
             return "Nenhuma fala detectada. Tente ditado de novo."
         }

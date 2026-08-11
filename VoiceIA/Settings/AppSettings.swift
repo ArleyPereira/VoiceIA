@@ -9,8 +9,6 @@ final class AppSettings {
         static let transcriptionLanguage = "settings.transcriptionLanguage"
         static let isTestModeEnabled = "settings.isTestModeEnabled"
         static let keepRecordingsAfterTranscription = "settings.keepRecordingsAfterTranscription"
-        static let useLocalWhisperGPU = "settings.useLocalWhisperGPU"
-        static let selectedLocalWhisperModel = "settings.selectedLocalWhisperModel"
         static let transcriptionBackend = "settings.transcriptionBackend"
         static let appearanceTheme = "settings.appearanceTheme"
         static let isTranscriptionHistoryEnabled = "settings.isTranscriptionHistoryEnabled"
@@ -44,21 +42,7 @@ final class AppSettings {
         }
     }
 
-    /// Preferência para a futura engine Whisper (Metal). Ainda não afeta o ditado.
-    var useLocalWhisperGPU: Bool {
-        didSet {
-            defaults.set(useLocalWhisperGPU, forKey: DefaultsKey.useLocalWhisperGPU)
-        }
-    }
-
-    /// ID do modelo local selecionado (`LocalTranscriptionModel.rawValue`).
-    var selectedLocalWhisperModel: String {
-        didSet {
-            defaults.set(selectedLocalWhisperModel, forKey: DefaultsKey.selectedLocalWhisperModel)
-        }
-    }
-
-    /// Backend do ditado: `"api"` (OpenAI) ou `"local"` (Whisper no Mac).
+    /// Backend do ditado: `"api"` (OpenAI) ou `"local"` (Parakeet neste Mac).
     var transcriptionBackend: String {
         didSet {
             defaults.set(transcriptionBackend, forKey: DefaultsKey.transcriptionBackend)
@@ -120,21 +104,6 @@ final class AppSettings {
         }
 
         self.keepRecordingsAfterTranscription = defaults.bool(forKey: DefaultsKey.keepRecordingsAfterTranscription)
-
-        if defaults.object(forKey: DefaultsKey.useLocalWhisperGPU) == nil {
-            self.useLocalWhisperGPU = true
-        } else {
-            self.useLocalWhisperGPU = defaults.bool(forKey: DefaultsKey.useLocalWhisperGPU)
-        }
-
-        let storedModel = defaults.string(forKey: DefaultsKey.selectedLocalWhisperModel)
-        if let storedModel,
-           !storedModel.isEmpty,
-           LocalTranscriptionModel(rawValue: storedModel) != nil {
-            self.selectedLocalWhisperModel = storedModel
-        } else {
-            self.selectedLocalWhisperModel = LocalTranscriptionModel.default.rawValue
-        }
 
         let storedBackend = defaults.string(forKey: DefaultsKey.transcriptionBackend)
         self.transcriptionBackend = (storedBackend == "local") ? "local" : "api"

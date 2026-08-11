@@ -38,17 +38,9 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         "AXSearchField"
     ]
 
-    /// Resultado da checagem por releitura do valor AX.
-    private enum InsertionCheck {
-        /// O valor do campo mudou como esperado.
-        case confirmed
-        /// O valor continua idêntico: a inserção não chegou ao campo.
-        case rejected
-        /// O campo não expõe valor legível; não dá para afirmar nada.
-        case unknown
-    }
-
     private(set) var lastMethod: InsertionMethod?
+
+    var onInsertionLost: ((String) -> Void)?
 
     init(accessibilityService: any AccessibilityServiceProtocol) {
         self.accessibilityService = accessibilityService
@@ -82,7 +74,15 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
 
         // Depois de uma transcrição longa o app alvo pode ter perdido o
         // frontmost; reativar antes de reler o foco evita alvo fantasma.
-        if let captured {
+        //
+        // Só vale quando o que capturamos é mesmo um campo de texto. Se a
+        // gravação começou sem foco em nada editável (a mesa, o Finder) e o
+        // usuário clicou num input **durante** a fala, reativar o app capturado
+        // roubaria de volta o foco que ele acabou de escolher — e aí lemos como
+        // "sem campo editável" uma janela que nós mesmos trouxemos para frente.
+        // Um capturado não-editável nunca é aceito como alvo no `guard` abaixo,
+        // então ativá-lo não traz ganho nenhum.
+        if let captured, resolveEditableTarget(from: captured) != nil {
             try? await activateAndWait(pid: captured.processID)
         }
 
@@ -104,6 +104,17 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         logDiagnostics(target: target, captured: captured, live: liveTarget)
 
         let chromiumLike = isChromiumLike(target)
+        let bundleID = NSRunningApplication(processIdentifier: target.processID)?
+            .bundleIdentifier ?? "desconhecido"
+        // Nunca logamos a ditagem em si — só o tamanho, que é a variável que
+        // separa o caso que funciona do que falha.
+        logger.notice(
+            """
+            Inserção: \(trimmed.count, privacy: .public) chars, \
+            app \(bundleID, privacy: .public), papel \(target.role ?? "—", privacy: .public), \
+            chromiumLike=\(chromiumLike, privacy: .public)
+            """
+        )
 
         // No Chromium/Electron o `AXSelectedText` pode “aceitar” e até inserir
         // sem o valor AX refletir direito. Se seguirmos para ⌘V/Unicode depois,
@@ -111,41 +122,252 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         //
         // Em campo nativo, porém, escrever no AX é síncrono e não toca no
         // clipboard: é o caminho mais rápido que existe aqui.
-        if !chromiumLike, insertViaAccessibilityVerified(trimmed, into: target) {
-            lastMethod = .accessibility
-            logger.notice("Inserido via Accessibility em \(target.summary, privacy: .public)")
-            return
-        }
-
-        // ⌘V é O(1): uma ditagem de 600 caracteres custa o mesmo que uma de 20.
-        // A digitação Unicode manda 2 eventos a cada 16 caracteres e fica cada
-        // vez mais lenta conforme o texto cresce — por isso virou só o resgate.
-        switch await insertViaClipboardPaste(trimmed, target: target) {
-        case .confirmed:
-            logger.notice("Inserido via clipboard + ⌘V (verificado).")
-            return
-        case .unknown:
-            logger.notice("⌘V enviado; campo não expõe valor para verificar.")
-            return
-        case .rejected:
-            if chromiumLike {
-                // Falso negativo clássico: o texto já foi para o contenteditable,
-                // mas o AXValue continua no placeholder. Inserir de novo duplica.
-                logger.notice(
-                    "⌘V em app Chromium sem confirmação AX — assumindo sucesso (evita duplicar)."
-                )
+        if !chromiumLike {
+            if insertViaAccessibilityVerified(trimmed, into: target) {
+                lastMethod = .accessibility
+                logger.notice("Inserido via Accessibility em \(target.summary, privacy: .public)")
                 return
             }
-            logger.notice("⌘V não alterou o campo; tentando digitação Unicode.")
+            logger.notice("Accessibility (AXSelectedText) não confirmou; seguindo para ⌘V.")
         }
 
-        switch await insertViaUnicodeTyping(trimmed, target: target) {
-        case .confirmed, .unknown:
-            lastMethod = .unicodeTyping
-            logger.notice("Inserido via digitação Unicode.")
-        case .rejected:
+        // Observa o campo depois que a inserção retornar. Não decide nada — só
+        // registra no log se um texto não apareceu, para sabermos disso sem
+        // produzir barra de resgate falsa.
+        auditInsertion(target: target, expected: trimmed)
+
+        // Daqui em diante não perguntamos mais ao AX "o texto entrou?".
+        //
+        // Essa pergunta não tem resposta confiável em Electron: com texto
+        // grande o input do Cursor vira área rolável, o Lexical espalha o
+        // conteúdo em vários nós e o elemento focado para de agregar o
+        // `kAXValueAttribute` — lê 15 chars num campo que tem 850. Tratar isso
+        // como "não colou" já custou perda silenciosa, barra de resgate falsa e
+        // uma ditagem inteira duplicada no input.
+        //
+        // O que sabemos com certeza é se o evento saiu. Se saiu, o texto foi
+        // entregue; se nenhum mecanismo funcionou, aí sim houve falha real.
+        if await insertViaClipboardPaste(trimmed, target: target) {
+            logger.notice("Inserido via clipboard + ⌘V.")
+            return
+        }
+
+        // Chegar aqui significa que nenhum dos três mecanismos de colagem
+        // aceitou o evento — o ⌘V comprovadamente não saiu, então digitar não
+        // duplica nada. É a única situação em que a digitação entra: como
+        // resgate de mecanismo, nunca porque o AX deixou de confirmar.
+        logger.notice("Colagem não pôde ser enviada; tentando digitação Unicode.")
+        guard await insertViaUnicodeTyping(trimmed, target: target) else {
+            logger.error("Nenhum mecanismo de entrega funcionou; oferecendo pela barra de resgate.")
             throw VoiceInputError.textInsertionFailed
         }
+        lastMethod = .unicodeTyping
+    }
+
+    /// Acompanha o campo por alguns segundos **depois** da inserção retornar.
+    ///
+    /// Diagnóstico puro: não interfere no fluxo nem no tempo dele — justamente
+    /// porque o tempo é a variável suspeita quando a ditagem é longa. Registra o
+    /// tamanho do valor AX ao longo do tempo, então dá para distinguir três
+    /// casos que hoje terminam iguais no log: o texto entrou na hora, entrou
+    /// tarde (depois de já termos devolvido o clipboard), ou nunca entrou.
+    private func auditInsertion(target: FocusedElement, expected: String) {
+        let placeholder = axPlaceholder(of: target.axElement)
+        let baselineRaw = copyStringAttribute(target.axElement, kAXValueAttribute as CFString)
+        let baseline = strippingPlaceholder(from: baselineRaw, placeholder: placeholder).count
+        let expectedCount = expected.count
+        let start = DispatchTime.now()
+
+        Task { [weak self] in
+            guard let self else { return }
+            var previous = -1
+
+            for delay in [400, 800, 1_500, 3_000] {
+                let elapsedMs = Int(Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000)
+                try? await Task.sleep(for: .milliseconds(max(0, delay - elapsedMs)))
+
+                // Do momento em que o usuário digita, o campo é dele: apagar a
+                // ditagem recém-inserida não é falha de inserção.
+                if self.userTypedSince(start) {
+                    self.logger.notice("Auditoria encerrada: o usuário editou o campo.")
+                    return
+                }
+
+                // Mesmo cuidado da verificação: preferir o foco atual, porque o
+                // elemento capturado pode ter sido descartado pelo editor.
+                let live = try? self.accessibilityService.focusedElement()
+                let element = (live?.processID == target.processID ? live?.axElement : nil) ?? target.axElement
+                let raw = self.copyStringAttribute(element, kAXValueAttribute as CFString)
+                let current = self.strippingPlaceholder(from: raw ?? "", placeholder: placeholder)
+
+                // Só loga quando algo muda, para não encher o Console.
+                if current.count != previous {
+                    previous = current.count
+                    self.logger.notice(
+                        """
+                        Auditoria +\(delay, privacy: .public) ms: campo \(current.count, privacy: .public) chars \
+                        (era \(baseline, privacy: .public), esperado +\(expectedCount, privacy: .public))
+                        """
+                    )
+                }
+
+                if current.contains(expected) { return }
+
+                // O `AXValue` do nó focado não é a última palavra: no Chromium o
+                // texto de um contenteditable mora nos filhos, e esse nó pode
+                // continuar reportando o placeholder. Procurar na subárvore
+                // encontra o texto onde ele realmente está.
+                if let node = self.findDictation(expected, startingAt: element) {
+                    self.logger.notice(
+                        "Auditoria +\(delay, privacy: .public) ms: ditagem encontrada em \(node, privacy: .public)."
+                    )
+                    return
+                }
+            }
+
+            // O usuário não mexeu e a ditagem não está em lugar nenhum da
+            // subárvore do campo nem do contenteditable que o contém. É a
+            // evidência mais forte de falha que essa API permite montar.
+            self.logger.error(
+                """
+                Auditoria: a ditagem de \(expectedCount, privacy: .public) chars não foi encontrada na árvore \
+                do campo em 3 s — abrindo a barra de resgate.
+                """
+            )
+            self.dumpTextAttributes(of: target, expected: expected)
+            self.onInsertionLost?(expected)
+        }
+    }
+
+    /// Procura a ditagem no nó, no ancestral editável e na subárvore de ambos.
+    ///
+    /// O dump AX do chat do Cursor mostrou por que olhar só o nó focado não
+    /// basta: ele reporta `AXValue` e `AXNumberOfCharacters` iguais a 15 (o
+    /// placeholder) com 609 caracteres visíveis na tela, e traz
+    /// `AXChildren` e `AXHighestEditableAncestor`. O texto do contenteditable
+    /// está em outro nó da árvore, não naquele.
+    ///
+    /// - Returns: descrição de onde achou, ou `nil` se não achou em lugar nenhum.
+    private func findDictation(_ expected: String, startingAt element: AXUIElement) -> String? {
+        var roots: [(label: String, element: AXUIElement)] = [("nó focado", element)]
+
+        // O contenteditable inteiro costuma agregar o texto que o nó focado não
+        // agrega, então ele entra na busca como raiz alternativa.
+        for attribute in ["AXHighestEditableAncestor", "AXEditableAncestor"] {
+            if let ancestor = copyElementAttribute(element, attribute as CFString) {
+                roots.append((attribute, ancestor))
+            }
+        }
+
+        var budget = Self.subtreeSearchBudget
+        for root in roots {
+            if let path = search(expected, in: root.element, depth: 0, budget: &budget) {
+                return path.isEmpty ? root.label : "\(root.label) → \(path)"
+            }
+        }
+        return nil
+    }
+
+    /// Quantos nós a busca pode visitar, somando todas as raízes.
+    ///
+    /// A árvore de um Electron é grande; o teto mantém a auditoria barata
+    /// mesmo rodando quatro vezes por ditagem.
+    private static let subtreeSearchBudget = 400
+
+    private func search(
+        _ expected: String,
+        in element: AXUIElement,
+        depth: Int,
+        budget: inout Int
+    ) -> String? {
+        guard budget > 0, depth <= 6 else { return nil }
+        budget -= 1
+
+        if let value = copyStringAttribute(element, kAXValueAttribute as CFString),
+           value.contains(expected) {
+            return ""
+        }
+
+        var children: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &children) == .success,
+              let list = children as? [AXUIElement] else {
+            return nil
+        }
+
+        for (index, child) in list.enumerated() {
+            if let path = search(expected, in: child, depth: depth + 1, budget: &budget) {
+                let step = "filho[\(index)]"
+                return path.isEmpty ? step : "\(step) → \(path)"
+            }
+        }
+        return nil
+    }
+
+    /// Lê um atributo que devolve outro elemento da árvore.
+    private func copyElementAttribute(_ element: AXUIElement, _ attribute: CFString) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
+            return nil
+        }
+        return (value as! AXUIElement)
+    }
+
+    /// Lista todos os atributos do campo e diz quais contêm a ditagem.
+    ///
+    /// Diagnóstico para um problema específico: o `AXValue` do Cursor às vezes
+    /// fica preso no placeholder mesmo com o texto visível na tela, e por isso
+    /// não serve para decidir se a inserção falhou. Este dump responde se algum
+    /// outro atributo — contagem de caracteres, posição do cursor, um filho da
+    /// árvore — reflete o conteúdo real. Sem isso, qualquer regra nova seria
+    /// chute com amostra pequena, que é como as anteriores falharam.
+    private func dumpTextAttributes(of target: FocusedElement, expected: String) {
+        let live = try? accessibilityService.focusedElement()
+        let element = (live?.processID == target.processID ? live?.axElement : nil) ?? target.axElement
+
+        var names: CFArray?
+        guard AXUIElementCopyAttributeNames(element, &names) == .success,
+              let attributes = names as? [String] else {
+            logger.error("Dump AX: não foi possível listar os atributos.")
+            return
+        }
+
+        logger.notice("Dump AX — \(attributes.count, privacy: .public) atributos: \(attributes.joined(separator: ", "), privacy: .public)")
+
+        // Só o formato de cada valor, nunca o conteúdo: a ditagem é do usuário.
+        for name in attributes {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success,
+                  let value else { continue }
+
+            let description: String
+            if let text = value as? String {
+                description = "String(\(text.count) chars)\(text.contains(expected) ? " ← CONTÉM A DITAGEM" : "")"
+            } else if let number = value as? NSNumber {
+                description = "Number(\(number))"
+            } else if let array = value as? [Any] {
+                description = "Array(\(array.count) itens)"
+            } else if CFGetTypeID(value) == AXUIElementGetTypeID() {
+                description = "AXUIElement"
+            } else {
+                description = String(describing: CFCopyTypeIDDescription(CFGetTypeID(value)) as String? ?? "?")
+            }
+            logger.notice("Dump AX  \(name, privacy: .public) = \(description, privacy: .public)")
+        }
+    }
+
+    /// `true` se alguma tecla foi pressionada depois de `reference`.
+    ///
+    /// O ⌘V que nós mesmos injetamos também conta como tecla, por isso a
+    /// comparação é contra o instante em que ele saiu, com uma folga para o
+    /// arredondamento do relógio de eventos.
+    private func userTypedSince(_ reference: DispatchTime) -> Bool {
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - reference.uptimeNanoseconds) / 1_000_000_000
+        let sinceLastKey = CGEventSource.secondsSinceLastEventType(
+            .combinedSessionState,
+            eventType: .keyDown
+        )
+        return sinceLastKey < elapsed - 0.05
     }
 
     /// Cursor, VS Code, Chrome e afins: valor AX do contenteditable é pouco confiável.
@@ -403,43 +625,28 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
     /// teclado nem da área de transferência. `virtualKey: 0` evita que o app
     /// interprete o evento como atalho — inclusive `\n`, que entra como quebra
     /// de linha em vez de disparar o Enter.
-    private func insertViaUnicodeTyping(_ text: String, target: FocusedElement) async -> InsertionCheck {
+    /// - Returns: `true` se todos os eventos foram enviados. Como na colagem,
+    ///   não afirma que o texto apareceu — só que a entrega saiu daqui.
+    private func insertViaUnicodeTyping(_ text: String, target: FocusedElement) async -> Bool {
         try? await activateAndWait(pid: target.processID)
-
-        let placeholder = axPlaceholder(of: target.axElement)
-        let beforeRaw = copyStringAttribute(target.axElement, kAXValueAttribute as CFString)
-        let before = strippingPlaceholder(from: beforeRaw, placeholder: placeholder)
 
         // `privateState` isola o estado de modificadores do teclado físico:
         // sem isso, um Shift residual do ⇧ Tab contamina a digitação.
         guard let source = CGEventSource(stateID: .privateState) else {
             logger.error("Não foi possível criar a fonte de eventos para digitar.")
-            return .rejected
+            return false
         }
         source.keyboardType = 0
 
         for chunk in unicodeChunks(of: text) {
             guard postUnicodeChunk(chunk, source: source) else {
                 logger.error("Falha ao criar evento de digitação Unicode.")
-                return .rejected
+                return false
             }
         }
 
-        // O AX do Electron atrasa; várias releituras evitam falso `.rejected`.
-        for attempt in 0..<4 {
-            try? await Task.sleep(for: .milliseconds(attempt == 0 ? 180 : 120))
-            let check = verifyInsertion(
-                in: target,
-                beforeRaw: beforeRaw,
-                before: before,
-                inserted: text,
-                placeholder: placeholder
-            )
-            if check != .rejected {
-                return check
-            }
-        }
-        return .rejected
+        logger.notice("Digitação Unicode enviada (\(text.count, privacy: .public) chars).")
+        return true
     }
 
     /// Quebra o texto em blocos curtos: eventos com payload longo demais são
@@ -490,38 +697,18 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         return true
     }
 
-    /// Compara o valor do campo antes e depois para saber se o texto entrou.
-    private func verifyInsertion(
-        in target: FocusedElement,
-        beforeRaw: String?,
-        before: String,
-        inserted: String,
-        placeholder: String?
-    ) -> InsertionCheck {
-        guard beforeRaw != nil else { return .unknown }
-
-        let afterRaw = copyStringAttribute(target.axElement, kAXValueAttribute as CFString)
-        guard let afterRaw else { return .unknown }
-
-        let after = strippingPlaceholder(from: afterRaw, placeholder: placeholder)
-
-        if after.contains(inserted) {
-            return .confirmed
-        }
-        // Campos longos podem truncar o valor AX; qualquer crescimento já indica escrita.
-        if after.count > before.count {
-            return .confirmed
-        }
-        return after == before ? .rejected : .unknown
-    }
-
     // MARK: - Clipboard + ⌘V (caminho principal)
 
     /// Cola via ⌘V e **sempre** devolve o clipboard original ao usuário.
     ///
     /// Nunca deixamos a ditagem na área de transferência sem que o usuário peça:
     /// substituir o que ele havia copiado é perda de dado do ponto de vista dele.
-    private func insertViaClipboardPaste(_ text: String, target: FocusedElement) async -> InsertionCheck {
+    ///
+    /// - Returns: `true` se algum mecanismo de entrega aceitou o evento. Não diz
+    ///   que o texto apareceu no campo — essa pergunta o AX não responde de
+    ///   forma confiável em Electron, e tentar respondê-la foi a origem da
+    ///   perda silenciosa, da barra de resgate falsa e da duplicação.
+    private func insertViaClipboardPaste(_ text: String, target: FocusedElement) async -> Bool {
         let pasteboard = NSPasteboard.general
         let snapshot = ClipboardSnapshot.capture(from: pasteboard)
 
@@ -531,14 +718,20 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         pasteboard.setData(Data(), forType: .transient)
         guard pasteboard.setString(text, forType: .string) else {
             snapshot.restore(into: pasteboard)
-            return .rejected
+            return false
         }
 
-        let placeholder = axPlaceholder(of: target.axElement)
-        let beforeRaw = copyStringAttribute(target.axElement, kAXValueAttribute as CFString)
-        let before = strippingPlaceholder(from: beforeRaw, placeholder: placeholder)
+        let pasteStart = DispatchTime.now()
+        func elapsedMs() -> Int {
+            Int(Double(DispatchTime.now().uptimeNanoseconds - pasteStart.uptimeNanoseconds) / 1_000_000)
+        }
 
-        defer { snapshot.restore(into: pasteboard) }
+        // O momento da devolução importa: se o app alvo ainda não tiver lido o
+        // clipboard, ele passa a ler o conteúdo antigo e a ditagem se perde.
+        defer {
+            snapshot.restore(into: pasteboard)
+            logger.notice("Clipboard devolvido ao usuário em +\(elapsedMs(), privacy: .public) ms.")
+        }
 
         try? await activateAndWait(pid: target.processID)
 
@@ -549,26 +742,28 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         } else if pasteViaSystemEvents() {
             lastMethod = .clipboardSystemEvents
         } else {
-            return .rejected
+            return false
         }
 
-        // Marco da latência percebida: daqui em diante o texto já está no campo,
-        // e o que vem depois só confirma e devolve o clipboard.
-        logger.notice("⌘V enviado — texto já entregue ao app.")
-
-        // Settle antes de reler o campo e antes do `defer` devolver o clipboard:
-        // o app alvo precisa consumir o ⌘V com a ditagem ainda lá. Isso roda
-        // depois de as teclas terem chegado, então não atrasa o que o usuário vê.
-        try? await Task.sleep(for: .milliseconds(220))
-
-        return verifyInsertion(
-            in: target,
-            beforeRaw: beforeRaw,
-            before: before,
-            inserted: text,
-            placeholder: placeholder
+        logger.notice(
+            """
+            ⌘V enviado em +\(elapsedMs(), privacy: .public) ms via \
+            \(self.lastMethod?.rawValue ?? "—", privacy: .public) — \
+            \(text.count, privacy: .public) chars.
+            """
         )
+
+        // Tempo para o app consumir o ⌘V antes de o `defer` devolver o
+        // clipboard. Devolver cedo demais faz o app colar o conteúdo anterior.
+        // Como a ditagem vai marcada como transitória, segurá-la um pouco mais
+        // não suja o histórico de clipboard — e nada disso é latência
+        // percebida: o texto já apareceu bem antes.
+        try? await Task.sleep(for: .milliseconds(Self.pasteSettleMs))
+        return true
     }
+
+    /// Quanto tempo a ditagem fica no clipboard depois do ⌘V.
+    private static let pasteSettleMs = 900
 
     /// Ativa o app alvo e aguarda ele virar frontmost de fato.
     private func activateAndWait(pid: pid_t) async throws {
