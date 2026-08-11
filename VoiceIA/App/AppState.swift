@@ -323,6 +323,51 @@ final class AppState {
         }
     }
 
+    /// Descarta a gravação em andamento (botão ✕ do HUD).
+    ///
+    /// Diferente do encerramento normal: não transcreve, não insere e não grava
+    /// no histórico. O usuário pediu para essa ditagem deixar de existir, então
+    /// o áudio é apagado mesmo com "manter gravações" ligado — a opção fala
+    /// sobre ditagens concluídas, não sobre uma que foi cancelada.
+    func cancelDictation() async {
+        guard recordingState == .recording || recordingState == .paused else { return }
+        guard !isMicrophoneOnlyTest else { return }
+
+        stopLevelPolling()
+        stopDurationTicker()
+        recordingStartedAt = nil
+        accumulatedRecordingDuration = 0
+
+        // Encerra a captura só para liberar microfone e writer; o PCM devolvido
+        // é descartado junto com o resto.
+        let capture = try? await audioRecorder.stopCapture()
+        hotkeyService.resetHoldState()
+        capturedFocusedElement = nil
+
+        if let audioURL = capture?.fileURL {
+            Task { [weak self] in
+                guard let self else { return }
+                _ = try? await self.audioRecorder.finalizedRecording()
+                try? self.audioRecorder.deleteRecording(at: audioURL)
+                if self.lastRecordingURL == audioURL {
+                    self.lastRecordingURL = nil
+                }
+            }
+        }
+
+        lastRecordingURL = nil
+        lastRecordingByteCount = nil
+        lastTranscriptionText = nil
+        lastInsertionMessage = nil
+        lastHotkeyResultMessage = "Gravação descartada."
+        displayedAudioLevel = 0
+        recordingDurationText = "0:00"
+        LiveAudioMeter.shared.reset()
+        recordingState = .idle
+
+        logger.notice("Ditagem cancelada pelo usuário; nada foi transcrito nem salvo.")
+    }
+
     /// Encerra e envia para transcrição (botão ■ do HUD).
     func stopDictationAndTranscribe() async {
         guard recordingState == .recording || recordingState == .paused else { return }

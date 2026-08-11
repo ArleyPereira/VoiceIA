@@ -9,6 +9,7 @@ struct RecordingOverlay: View {
     @Bindable var appState: AppState
     @State private var glow = OverlayGlowDriver()
     @State private var didCopyFeedback = false
+    @State private var isHoveringBar = false
 
     static let recordingBarSize = CGSize(width: 300, height: 52)
     static let rescueBarSize = CGSize(width: 360, height: 78)
@@ -51,6 +52,10 @@ struct RecordingOverlay: View {
 
     private var isCapturing: Bool {
         appState.recordingState == .recording || appState.recordingState == .paused
+    }
+
+    private var isPaused: Bool {
+        appState.recordingState == .paused
     }
 
     /// Mantém a animação só no estilo moderno, enquanto o HUD de captura está à mostra.
@@ -176,12 +181,33 @@ struct RecordingOverlay: View {
                 .monospacedDigit()
                 .allowsHitTesting(false)
 
-            pauseButton
+            // Gravando, a barra fica limpa: só onda e duração. Os controles
+            // aparecem no hover.
+            //
+            // Pausado é a exceção: sem o play à vista, uma gravação parada não
+            // dá sinal de como continuar, e o usuário teria de descobrir o
+            // hover para retomar.
+            if isHoveringBar || isPaused {
+                pauseButton
+                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
+            }
+
+            // Descartar é destrutivo e irreversível, então nunca fica à mostra
+            // por padrão — nem pausado.
+            if isHoveringBar {
+                cancelButton
+                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
+            }
         }
         .padding(.horizontal, 14)
         .frame(width: Self.recordingBarSize.width, height: Self.recordingBarSize.height)
         .background { barBackground }
         .overlay { barBorder }
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.14)) {
+                isHoveringBar = hovering
+            }
+        }
     }
 
     private var pauseButton: some View {
@@ -203,6 +229,22 @@ struct RecordingOverlay: View {
         }
         .buttonStyle(.plain)
         .help(appState.recordingState == .paused ? "Continuar" : "Pausar")
+    }
+
+    /// Descarta a ditagem: nada é transcrito, inserido ou salvo no histórico.
+    private var cancelButton: some View {
+        Button {
+            Task { await appState.cancelDictation() }
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 28, height: 28)
+                .background(Circle().fill(Color.white.opacity(isClassic ? 0.12 : 0.16)))
+                .overlay(Circle().strokeBorder(.white.opacity(isClassic ? 0.10 : 0.14), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help("Descartar gravação")
     }
 
     @ViewBuilder
