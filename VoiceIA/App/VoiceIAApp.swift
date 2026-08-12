@@ -10,8 +10,7 @@ struct VoiceIAApp: App {
             MenuBarView()
                 .environment(appState)
         } label: {
-            Label("VoiceIA", systemImage: "waveform")
-                .labelStyle(.iconOnly)
+            MenuBarWaveformIconView()
                 .help(helpText)
         }
     }
