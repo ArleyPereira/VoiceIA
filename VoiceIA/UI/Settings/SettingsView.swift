@@ -49,8 +49,11 @@ enum SettingsTab: String, CaseIterable, Identifiable {
 /// Janela de configurações: abas na lateral, conteúdo à direita.
 struct SettingsView: View {
     @Bindable var viewModel: SettingsViewModel
-    @State private var selectedTab: SettingsTab = .general
     @Environment(\.colorScheme) private var colorScheme
+
+    /// Mora no view model para quem abre a janela poder escolher a aba —
+    /// o menu da barra de status abre direto no Histórico.
+    private var selectedTab: SettingsTab { viewModel.selectedTab }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -110,7 +113,7 @@ struct SettingsView: View {
         let isSelected = tab == selectedTab
 
         return Button {
-            selectedTab = tab
+            viewModel.selectedTab = tab
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: tab.icon)
