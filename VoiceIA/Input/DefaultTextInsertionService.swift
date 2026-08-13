@@ -898,13 +898,20 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         commandUp.type = .flagsChanged
         commandUp.flags = []
 
-        // Pequenas pausas: eventos no mesmo instante são descartados por alguns
-        // apps. Estes 4 × 8 ms são latência percebida — a colagem só acontece
-        // depois do último evento —, então ficam no menor valor que o Chromium
-        // ainda processa de forma confiável.
+        // Pausa entre os eventos: o Chromium reconstrói o estado dos
+        // modificadores a partir dos `flagsChanged`, que atravessam IPC entre
+        // processos. Se o `keyDown` do V chegar antes de o ⌘ ter sido
+        // processado, a sequência é descartada — nada cola, e nem sequer entra
+        // um "v" solto.
+        //
+        // Este valor já foi 18 ms e eu o reduzi para 8 ms no PR de latência
+        // (#4), para economizar 40 ms, chamando 8 ms de "o menor valor que o
+        // Chromium ainda processa de forma confiável" — o que era estimativa,
+        // não medição. Voltou para 18 ms: perder a ditagem custa muito mais que
+        // 40 ms, e esses 40 ms não são latência percebida de qualquer forma.
         for event in [commandDown, vDown, vUp, commandUp] {
             event.post(tap: tap)
-            usleep(8_000)
+            usleep(18_000)
         }
         return true
     }
