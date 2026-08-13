@@ -129,22 +129,34 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
             logger.notice("Accessibility (AXSelectedText) não confirmou; seguindo para ⌘V.")
         }
 
-        // O estado do campo tem que ser lido **antes** da colagem; a auditoria
-        // em si só começa depois, senão o nosso próprio ⌘V conta como
+        // O estado do campo tem que ser lido **antes** da escrita; a auditoria
+        // em si só começa depois, senão a nossa própria digitação conta como
         // "usuário digitou" e encerra a checagem por engano.
         let baseline = fieldSnapshot(of: target)
 
-        // Daqui em diante não perguntamos mais ao AX "o texto entrou?".
+        // Nunca perguntamos ao AX "o texto entrou?" para decidir. O que sabemos
+        // com certeza é se o evento saiu; se nenhum mecanismo aceitou, aí sim
+        // houve falha real.
         //
-        // Essa pergunta não tem resposta confiável em Electron: com texto
-        // grande o input do Cursor vira área rolável, o Lexical espalha o
-        // conteúdo em vários nós e o elemento focado para de agregar o
-        // `kAXValueAttribute` — lê 15 chars num campo que tem 850. Tratar isso
-        // como "não colou" já custou perda silenciosa, barra de resgate falsa e
-        // uma ditagem inteira duplicada no input.
+        // A ORDEM depende do app, e isso foi medido: em 13 ditagens no Cursor,
+        // o ⌘V não chegou ao campo em ~1 de cada 3. Todo o resto estava
+        // correto — clipboard íntegro nos três checkpoints, app em foco, sem
+        // modificador preso —, então o evento é aceito pelo sistema e descartado
+        // pelo app. Aumentar a pausa entre os eventos de 8 para 18 ms não mudou.
         //
-        // O que sabemos com certeza é se o evento saiu. Se saiu, o texto foi
-        // entregue; se nenhum mecanismo funcionou, aí sim houve falha real.
+        // A digitação Unicode era o caminho principal antes do PR de latência e
+        // não tinha esse problema; o ⌘V entrou para ganhar tempo e trouxe a
+        // falha junto. Nos apps Electron ela volta a ser a primeira opção.
+        if chromiumLike {
+            if await insertViaUnicodeTyping(trimmed, target: target) {
+                lastMethod = .unicodeTyping
+                logger.notice("Inserido via digitação Unicode.")
+                auditInsertion(target: target, expected: trimmed, baseline: baseline)
+                return
+            }
+            logger.notice("Digitação não pôde ser enviada; tentando clipboard + ⌘V.")
+        }
+
         if await insertViaClipboardPaste(trimmed, target: target) {
             logger.notice("Inserido via clipboard + ⌘V.")
             // Só agora: a partir daqui qualquer tecla é mesmo do usuário.
@@ -152,16 +164,20 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
             return
         }
 
-        // Chegar aqui significa que nenhum dos três mecanismos de colagem
-        // aceitou o evento — o ⌘V comprovadamente não saiu, então digitar não
-        // duplica nada. É a única situação em que a digitação entra: como
-        // resgate de mecanismo, nunca porque o AX deixou de confirmar.
-        logger.notice("Colagem não pôde ser enviada; tentando digitação Unicode.")
-        guard await insertViaUnicodeTyping(trimmed, target: target) else {
-            logger.error("Nenhum mecanismo de entrega funcionou; oferecendo pela barra de resgate.")
-            throw VoiceInputError.textInsertionFailed
+        // Cada mecanismo já foi tentado no máximo uma vez, então não há como
+        // duplicar: chegar aqui significa que nenhum evento saiu.
+        if !chromiumLike {
+            logger.notice("Colagem não pôde ser enviada; tentando digitação Unicode.")
+            if await insertViaUnicodeTyping(trimmed, target: target) {
+                lastMethod = .unicodeTyping
+                logger.notice("Inserido via digitação Unicode.")
+                auditInsertion(target: target, expected: trimmed, baseline: baseline)
+                return
+            }
         }
-        lastMethod = .unicodeTyping
+
+        logger.error("Nenhum mecanismo de entrega funcionou; oferecendo pela barra de resgate.")
+        throw VoiceInputError.textInsertionFailed
     }
 
     /// Acompanha o campo por alguns segundos **depois** da inserção retornar.
