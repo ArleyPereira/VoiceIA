@@ -102,6 +102,12 @@ final class SettingsViewModel {
     /// Monitor local de teclado durante a captura.
     private var hotkeyCaptureMonitor: Any?
 
+    /// Aba ativa da janela de configurações.
+    ///
+    /// Fica aqui, e não em `@State` da view, para quem abre a janela poder
+    /// escolher onde ela começa — o menu da barra de status abre no Histórico.
+    var selectedTab: SettingsTab = .general
+
     /// Sub-aba ativa em Modelos.
     var selectedModelsPane: ModelsPane = .api
 

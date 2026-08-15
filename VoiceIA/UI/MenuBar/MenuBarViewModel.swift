@@ -10,8 +10,8 @@ struct MenuBarViewModel {
         appState.openSettingsWindow()
     }
 
-    func openRecordingsFolder() {
-        appState.openRecordingsFolder()
+    func openHistory() {
+        appState.openSettingsWindow(tab: .history)
     }
 
     func quit() {

@@ -25,16 +25,16 @@ struct MenuBarView: View {
         }
 
         Section {
-            Button("Configurações…") {
+            Button("Configurações") {
                 viewModel.openSettings()
             }
             .keyboardShortcut(",", modifiers: .command)
 
-            Button("Abrir pasta de gravações") {
-                viewModel.openRecordingsFolder()
+            Button("Histórico") {
+                viewModel.openHistory()
             }
 
-            Button("Sair do VoiceIA") {
+            Button("Sair") {
                 viewModel.quit()
             }
             .keyboardShortcut("q", modifiers: .command)

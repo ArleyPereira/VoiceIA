@@ -22,6 +22,7 @@ final class SettingsWindowController {
     func show(
         settings: AppSettings,
         historyStore: TranscriptionHistoryStore = .shared,
+        tab: SettingsTab? = nil,
         onTranscriptionPolicyChanged: @escaping () -> Void = {},
         onRecordingHUDStyleChanged: @escaping () -> Void = {},
         onDictationHotkeyChanged: @escaping () -> Void = {},
@@ -79,6 +80,11 @@ final class SettingsWindowController {
 
         // Reuso: garante referência atualizada da janela.
         viewModel?.hostWindow = window
+        // Vale também na reabertura: quem pediu uma aba específica quer ela,
+        // não a que ficou selecionada da última vez.
+        if let tab {
+            viewModel?.selectedTab = tab
+        }
         enforceMinimumWindowSize()
         applyAppearanceTheme()
 

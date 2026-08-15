@@ -40,8 +40,6 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
 
     private(set) var lastMethod: InsertionMethod?
 
-    var onInsertionLost: ((String) -> Void)?
-
     init(accessibilityService: any AccessibilityServiceProtocol) {
         self.accessibilityService = accessibilityService
     }
@@ -131,37 +129,55 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
             logger.notice("Accessibility (AXSelectedText) não confirmou; seguindo para ⌘V.")
         }
 
-        // Observa o campo depois que a inserção retornar. Não decide nada — só
-        // registra no log se um texto não apareceu, para sabermos disso sem
-        // produzir barra de resgate falsa.
-        auditInsertion(target: target, expected: trimmed)
+        // O estado do campo tem que ser lido **antes** da escrita; a auditoria
+        // em si só começa depois, senão a nossa própria digitação conta como
+        // "usuário digitou" e encerra a checagem por engano.
+        let baseline = fieldSnapshot(of: target)
 
-        // Daqui em diante não perguntamos mais ao AX "o texto entrou?".
+        // Nunca perguntamos ao AX "o texto entrou?" para decidir. O que sabemos
+        // com certeza é se o evento saiu; se nenhum mecanismo aceitou, aí sim
+        // houve falha real.
         //
-        // Essa pergunta não tem resposta confiável em Electron: com texto
-        // grande o input do Cursor vira área rolável, o Lexical espalha o
-        // conteúdo em vários nós e o elemento focado para de agregar o
-        // `kAXValueAttribute` — lê 15 chars num campo que tem 850. Tratar isso
-        // como "não colou" já custou perda silenciosa, barra de resgate falsa e
-        // uma ditagem inteira duplicada no input.
+        // A ORDEM depende do app, e isso foi medido: em 13 ditagens no Cursor,
+        // o ⌘V não chegou ao campo em ~1 de cada 3. Todo o resto estava
+        // correto — clipboard íntegro nos três checkpoints, app em foco, sem
+        // modificador preso —, então o evento é aceito pelo sistema e descartado
+        // pelo app. Aumentar a pausa entre os eventos de 8 para 18 ms não mudou.
         //
-        // O que sabemos com certeza é se o evento saiu. Se saiu, o texto foi
-        // entregue; se nenhum mecanismo funcionou, aí sim houve falha real.
+        // A digitação Unicode era o caminho principal antes do PR de latência e
+        // não tinha esse problema; o ⌘V entrou para ganhar tempo e trouxe a
+        // falha junto. Nos apps Electron ela volta a ser a primeira opção.
+        if chromiumLike {
+            if await insertViaUnicodeTyping(trimmed, target: target) {
+                lastMethod = .unicodeTyping
+                logger.notice("Inserido via digitação Unicode.")
+                auditInsertion(target: target, expected: trimmed, baseline: baseline)
+                return
+            }
+            logger.notice("Digitação não pôde ser enviada; tentando clipboard + ⌘V.")
+        }
+
         if await insertViaClipboardPaste(trimmed, target: target) {
             logger.notice("Inserido via clipboard + ⌘V.")
+            // Só agora: a partir daqui qualquer tecla é mesmo do usuário.
+            auditInsertion(target: target, expected: trimmed, baseline: baseline)
             return
         }
 
-        // Chegar aqui significa que nenhum dos três mecanismos de colagem
-        // aceitou o evento — o ⌘V comprovadamente não saiu, então digitar não
-        // duplica nada. É a única situação em que a digitação entra: como
-        // resgate de mecanismo, nunca porque o AX deixou de confirmar.
-        logger.notice("Colagem não pôde ser enviada; tentando digitação Unicode.")
-        guard await insertViaUnicodeTyping(trimmed, target: target) else {
-            logger.error("Nenhum mecanismo de entrega funcionou; oferecendo pela barra de resgate.")
-            throw VoiceInputError.textInsertionFailed
+        // Cada mecanismo já foi tentado no máximo uma vez, então não há como
+        // duplicar: chegar aqui significa que nenhum evento saiu.
+        if !chromiumLike {
+            logger.notice("Colagem não pôde ser enviada; tentando digitação Unicode.")
+            if await insertViaUnicodeTyping(trimmed, target: target) {
+                lastMethod = .unicodeTyping
+                logger.notice("Inserido via digitação Unicode.")
+                auditInsertion(target: target, expected: trimmed, baseline: baseline)
+                return
+            }
         }
-        lastMethod = .unicodeTyping
+
+        logger.error("Nenhum mecanismo de entrega funcionou; oferecendo pela barra de resgate.")
+        throw VoiceInputError.textInsertionFailed
     }
 
     /// Acompanha o campo por alguns segundos **depois** da inserção retornar.
@@ -171,11 +187,26 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
     /// tamanho do valor AX ao longo do tempo, então dá para distinguir três
     /// casos que hoje terminam iguais no log: o texto entrou na hora, entrou
     /// tarde (depois de já termos devolvido o clipboard), ou nunca entrou.
-    private func auditInsertion(target: FocusedElement, expected: String) {
+    /// Estado do campo antes da escrita, para a auditoria comparar depois.
+    private func fieldSnapshot(of target: FocusedElement) -> (placeholder: String?, length: Int) {
         let placeholder = axPlaceholder(of: target.axElement)
-        let baselineRaw = copyStringAttribute(target.axElement, kAXValueAttribute as CFString)
-        let baseline = strippingPlaceholder(from: baselineRaw, placeholder: placeholder).count
+        let raw = copyStringAttribute(target.axElement, kAXValueAttribute as CFString)
+        return (placeholder, strippingPlaceholder(from: raw, placeholder: placeholder).count)
+    }
+
+    private func auditInsertion(
+        target: FocusedElement,
+        expected: String,
+        baseline: (placeholder: String?, length: Int)
+    ) {
+        let placeholder = baseline.placeholder
+        let baselineLength = baseline.length
         let expectedCount = expected.count
+
+        // A contagem de "usuário digitou" começa **aqui**, depois de o nosso ⌘V
+        // já ter sido enviado. Medir a partir de antes fazia a nossa própria
+        // tecla contar como digitação do usuário e encerrar a auditoria por
+        // engano — foi assim que uma falha real passou sem barra de resgate.
         let start = DispatchTime.now()
 
         Task { [weak self] in
@@ -206,7 +237,7 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
                     self.logger.notice(
                         """
                         Auditoria +\(delay, privacy: .public) ms: campo \(current.count, privacy: .public) chars \
-                        (era \(baseline, privacy: .public), esperado +\(expectedCount, privacy: .public))
+                        (era \(baselineLength, privacy: .public), esperado +\(expectedCount, privacy: .public))
                         """
                     )
                 }
@@ -225,17 +256,25 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
                 }
             }
 
-            // O usuário não mexeu e a ditagem não está em lugar nenhum da
-            // subárvore do campo nem do contenteditable que o contém. É a
-            // evidência mais forte de falha que essa API permite montar.
+            // Não encontrar a ditagem **não** prova que ela não entrou, e por
+            // isso este caminho não abre a barra de resgate.
+            //
+            // O editor do VS Code e o do Cursor (ambos Monaco) publicam um
+            // campo vazio no AX: `AXValue` 0, `AXNumberOfCharacters` 0 e
+            // `AXChildren` 0, com o texto visível na tela. "Não entrou" e "o
+            // app não conta o que tem" produzem exatamente a mesma leitura, e
+            // tratar as duas como falha gerava barra falsa em toda ditagem
+            // nesses editores.
+            //
+            // Fica só como registro: sem isso não temos como medir a taxa real
+            // de falha de entrega, que continua sendo uma incógnita.
             self.logger.error(
                 """
                 Auditoria: a ditagem de \(expectedCount, privacy: .public) chars não foi encontrada na árvore \
-                do campo em 3 s — abrindo a barra de resgate.
+                do campo em 3 s. Pode ser falha de entrega ou app que não expõe o conteúdo — não dá para distinguir.
                 """
             )
             self.dumpTextAttributes(of: target, expected: expected)
-            self.onInsertionLost?(expected)
         }
     }
 
@@ -721,9 +760,42 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
             return false
         }
 
+        // O `changeCount` é o contador global do pasteboard: ele sobe a cada
+        // escrita, de qualquer processo. Se subir entre a nossa escrita e o
+        // ⌘V, alguém mexeu no clipboard no meio — e o app alvo vai colar outra
+        // coisa. É a única hipótese que sobrou para a ditagem sumir sem
+        // aparecer em lugar nenhum.
+        let ourChangeCount = pasteboard.changeCount
+        logger.notice(
+            """
+            Clipboard escrito: changeCount \(ourChangeCount, privacy: .public), \
+            relido \(pasteboard.string(forType: .string)?.count ?? -1, privacy: .public) de \
+            \(text.count, privacy: .public) chars.
+            """
+        )
+
         let pasteStart = DispatchTime.now()
         func elapsedMs() -> Int {
             Int(Double(DispatchTime.now().uptimeNanoseconds - pasteStart.uptimeNanoseconds) / 1_000_000)
+        }
+
+        /// Confere se o clipboard ainda é o nosso, e loga quem o alterou.
+        func checkClipboard(_ momento: String) {
+            let now = pasteboard.changeCount
+            let readBack = pasteboard.string(forType: .string)?.count ?? -1
+            if now != ourChangeCount || readBack != text.count {
+                logger.error(
+                    """
+                    Clipboard ALTERADO \(momento, privacy: .public) (+\(elapsedMs(), privacy: .public) ms): \
+                    changeCount \(ourChangeCount, privacy: .public) → \(now, privacy: .public), \
+                    conteúdo \(readBack, privacy: .public) chars (esperado \(text.count, privacy: .public)).
+                    """
+                )
+            } else {
+                logger.notice(
+                    "Clipboard intacto \(momento, privacy: .public) (+\(elapsedMs(), privacy: .public) ms)."
+                )
+            }
         }
 
         // O momento da devolução importa: se o app alvo ainda não tiver lido o
@@ -734,6 +806,32 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         }
 
         try? await activateAndWait(pid: target.processID)
+        checkClipboard("antes do ⌘V")
+
+        // Modificador físico ainda pressionado transforma o ⌘V em outro atalho
+        // (⇧⌘V, ⌥⌘V), que o app pode simplesmente ignorar — o que explicaria a
+        // ditagem sumir sem colar em lugar nenhum. O atalho de ditado é ⇧Tab,
+        // então o Shift é o suspeito natural.
+        let flags = CGEventSource.flagsState(.hidSystemState)
+        let presos = [
+            (CGEventFlags.maskShift, "⇧"), (.maskCommand, "⌘"),
+            (.maskAlternate, "⌥"), (.maskControl, "⌃"), (.maskSecondaryFn, "fn")
+        ].filter { flags.contains($0.0) }.map(\.1).joined()
+        if !presos.isEmpty {
+            logger.error("Modificadores AINDA pressionados no envio do ⌘V: \(presos, privacy: .public)")
+        }
+
+        // Frontmost real no instante do envio: se não for o alvo, o evento vai
+        // para outra janela.
+        let front = NSWorkspace.shared.frontmostApplication
+        if front?.processIdentifier != target.processID {
+            logger.error(
+                """
+                Frontmost mudou antes do ⌘V: \(front?.bundleIdentifier ?? "?", privacy: .public) \
+                (esperado pid \(target.processID, privacy: .public)).
+                """
+            )
+        }
 
         if postPasteShortcut(tap: .cghidEventTap) {
             lastMethod = .clipboardHID
@@ -758,7 +856,13 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         // Como a ditagem vai marcada como transitória, segurá-la um pouco mais
         // não suja o histórico de clipboard — e nada disso é latência
         // percebida: o texto já apareceu bem antes.
-        try? await Task.sleep(for: .milliseconds(Self.pasteSettleMs))
+        // Meio do settle: se o clipboard mudar aqui, mudou enquanto o app ainda
+        // tinha o ⌘V para processar.
+        try? await Task.sleep(for: .milliseconds(Self.pasteSettleMs / 2))
+        checkClipboard("no meio do settle")
+
+        try? await Task.sleep(for: .milliseconds(Self.pasteSettleMs / 2))
+        checkClipboard("ao fim do settle")
         return true
     }
 
@@ -810,13 +914,20 @@ final class DefaultTextInsertionService: TextInsertionService, @unchecked Sendab
         commandUp.type = .flagsChanged
         commandUp.flags = []
 
-        // Pequenas pausas: eventos no mesmo instante são descartados por alguns
-        // apps. Estes 4 × 8 ms são latência percebida — a colagem só acontece
-        // depois do último evento —, então ficam no menor valor que o Chromium
-        // ainda processa de forma confiável.
+        // Pausa entre os eventos: o Chromium reconstrói o estado dos
+        // modificadores a partir dos `flagsChanged`, que atravessam IPC entre
+        // processos. Se o `keyDown` do V chegar antes de o ⌘ ter sido
+        // processado, a sequência é descartada — nada cola, e nem sequer entra
+        // um "v" solto.
+        //
+        // Este valor já foi 18 ms e eu o reduzi para 8 ms no PR de latência
+        // (#4), para economizar 40 ms, chamando 8 ms de "o menor valor que o
+        // Chromium ainda processa de forma confiável" — o que era estimativa,
+        // não medição. Voltou para 18 ms: perder a ditagem custa muito mais que
+        // 40 ms, e esses 40 ms não são latência percebida de qualquer forma.
         for event in [commandDown, vDown, vUp, commandUp] {
             event.post(tap: tap)
-            usleep(8_000)
+            usleep(18_000)
         }
         return true
     }
