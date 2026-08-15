@@ -79,6 +79,34 @@ O CTC 110M é um modelo inglês; num ditado de 36 s ele produziu:
 `0.60` nos dois, as cinco trocas destrutivas somem e a correção legítima
 sobrevive (similaridade ~0,92). É o valor usado hoje.
 
+### 3.3 Ditagens curtas nunca eram avaliadas
+
+O rescorer só roda quando o texto é **confirmado**, e a confirmação exige
+`minContextForConfirmation` — 10 s por padrão. O log diz
+`VOLATILE: insufficient context (3.1s)` e o texto sai intocado.
+
+Como a maioria das ditagens tem menos de 10 s, na prática a lista quase nunca
+era consultada. O padrão de 10 s existe para streaming ao vivo, onde confirmar
+cedo faz o texto na tela mudar depois; aqui o áudio chega inteiro e só lemos o
+resultado final, então esperar não protege nada. Baixado para **1 s**.
+
+### 3.4 O piso do caminho principal
+
+Com a confirmação em 1 s o rescorer passou a agir nas frases curtas — e a
+`minSimilarity` padrão (0,52) mostrou o mesmo problema da seção 3.2 em outro
+caminho: `branch própria` virou `branch main` e um `e` sumiu no meio da frase.
+Note que os pisos de 3.2 **não** cobrem isto: eles guardam só o resgate
+acústico, não o caminho principal.
+
+Em **0,85** os dois estragos somem e nenhuma correção legítima é perdida. O
+preço é recall: `branch meio` deixa de virar `branch main`.
+
+| minSimilarity | `brand main` | `branch própria` | `e roda` |
+|---|---|---|---|
+| 0,52 | → `branch main` ✅ | → `branch main` ❌ | perdido ❌ |
+| 0,75 | → `branch main` ✅ | preservado ✅ | perdido ❌ |
+| **0,85** | → `branch main` ✅ | preservado ✅ | preservado ✅ |
+
 ---
 
 ## 4. Bug do FluidAudio contornado no nosso lado
@@ -103,12 +131,15 @@ Contorno: quando o boosting devolve vazio, repetimos no caminho batch. O log
 
 | Áudio | Batch | Streaming sem boosting | Com boosting |
 |---|---|---|---|
-| 5,3 s | 75 ms | 64 ms | 69 ms |
-| 8,9 s | 77 ms | 75 ms | 74 ms |
-| 36,5 s | 160 ms | 340 ms | 815 ms |
+| 3,1 s | 91 ms | 65 ms | 172 ms |
+| 5,3 s | 75 ms | 66 ms | 171 ms |
+| 8,9 s | 77 ms | 76 ms | 191 ms |
+| 36,5 s | 160 ms | 320 ms | 805 ms |
 
-Até ~13 s (uma janela só) não há custo. A partir daí a janela deslizante cobra
-~2× e o boosting ~5× sobre o batch. A carga inicial do CTC compila o Core ML e
+Com a confirmação em 1 s o rescorer roda também nas frases curtas, e elas
+passam a custar ~100 ms a mais — o preço de a lista finalmente ser consultada.
+Em 36 s a janela deslizante cobra ~2× e o boosting ~5× sobre o batch. A carga
+inicial do CTC compila o Core ML e
 leva ~12 s — por isso ele fica quente no cache e sai da RAM no mesmo idle
 unload de 10 min do TDT (ver `Parakeet_Modelo_Em_Memoria_10min.md`).
 

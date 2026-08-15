@@ -312,6 +312,25 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
     /// (`branche` → `branch`, similaridade ~0,92) sobrevive nos dois.
     private static let spotterRescueFloor: Float = 0.60
 
+    /// Piso de similaridade do caminho principal do rescorer (padrão 0,52).
+    ///
+    /// Em 0,52 ele troca palavras que só dividem o começo: `branch própria`
+    /// virou `branch main`, e um `e` sumiu no meio da frase. Em 0,85 os dois
+    /// estragos somem e nenhuma correção legítima é perdida — `brand main` →
+    /// `branch main`, `brand nova` → `branch nova`, `branche` → `branch`. O
+    /// preço é recall: `branch meio` deixa de virar `branch main`.
+    private static let vocabularyMinSimilarity: Float = 0.85
+
+    /// Contexto mínimo para o texto ser "confirmado" — e só texto confirmado é
+    /// avaliado pelo rescorer.
+    ///
+    /// O padrão do FluidAudio é 10 s, pensado para streaming ao vivo, onde
+    /// confirmar cedo demais faz o texto na tela mudar depois. Aqui o áudio
+    /// chega inteiro e só lemos o resultado final, então esperar não protege
+    /// nada — só faz **toda ditagem de menos de 10 s passar sem nenhuma
+    /// substituição ser sequer considerada**, que é a maioria delas.
+    private static let minContextForConfirmation: TimeInterval = 1.0
+
     /// Converte a lista do usuário no vocabulário do FluidAudio.
     ///
     /// O par vira **um termo com alias**: `text` é a grafia desejada e o alias é
@@ -361,11 +380,21 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
         let terms = Self.vocabularyTerms(from: replacements, tokenizer: tokenizer)
         guard !terms.isEmpty else { return nil }
 
-        let streaming = SlidingWindowAsrManager(config: .default)
+        // Mesma janela 11+2+2 do caminho batch; só o gatilho de confirmação muda.
+        let windowConfig = SlidingWindowAsrConfig(
+            chunkSeconds: 11.0,
+            hypothesisChunkSeconds: 2.0,
+            leftContextSeconds: 2.0,
+            rightContextSeconds: 2.0,
+            minContextForConfirmation: Self.minContextForConfirmation,
+            confirmationThreshold: 0.85
+        )
+        let streaming = SlidingWindowAsrManager(config: windowConfig)
         try await streaming.loadModels(models)
 
         let vocabulary = CustomVocabularyContext(
             terms: terms,
+            minSimilarity: Self.vocabularyMinSimilarity,
             minTermLength: WordReplacement.minimumLength
         )
         try await streaming.configureVocabularyBoosting(
