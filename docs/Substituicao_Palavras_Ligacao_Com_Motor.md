@@ -107,6 +107,19 @@ preço é recall: `branch meio` deixa de virar `branch main`.
 | 0,75 | → `branch main` ✅ | preservado ✅ | perdido ❌ |
 | **0,85** | → `branch main` ✅ | preservado ✅ | preservado ✅ |
 
+### 3.5 A grafia cadastrada não era respeitada
+
+`VocabularyRescorer+TokenEvaluation.swift:142` chama `preserveCapitalization`:
+se a palavra que o **modelo** escreveu começa com maiúscula, a primeira letra
+do termo cadastrado é maiusculizada. O Parakeet escreve `Brand` com maiúscula,
+então `branch` voltava `Branch` sem existir nenhum cadastro assim.
+
+Numa substituição de palavras a grafia cadastrada é o contrato, então o texto
+do caminho com boosting passa por uma normalização final que devolve a forma
+exata da lista. Como não dá para saber quais ocorrências vieram de uma troca, a
+normalização vale para todas — o efeito colateral é o termo ficar minúsculo
+mesmo começando frase.
+
 ---
 
 ## 4. Bug do FluidAudio contornado no nosso lado

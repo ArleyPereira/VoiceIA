@@ -411,7 +411,43 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
         try await streaming.startStreaming(source: .microphone)
         await streaming.streamAudio(try Self.makeBuffer(from: samples))
         let text = try await streaming.finish()
-        return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : text
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return Self.restoreRegisteredSpelling(in: text, replacements: replacements)
+    }
+
+    /// Devolve ao termo a grafia exata que o usuário cadastrou.
+    ///
+    /// O FluidAudio copia a capitalização do que o **modelo** escreveu para o
+    /// termo trocado (`preserveCapitalization`): como o Parakeet escreve `Brand`
+    /// com maiúscula, `branch` voltava `Branch` mesmo sem nenhum cadastro assim.
+    /// Numa substituição de palavras a grafia cadastrada é o contrato — quem
+    /// escreveu `branch` quer `branch`.
+    ///
+    /// Vale para o texto todo do caminho com boosting: não dá para saber quais
+    /// ocorrências vieram de uma troca, então qualquer aparição do termo é
+    /// normalizada. O efeito colateral é que o termo fica minúsculo mesmo
+    /// começando frase.
+    private static func restoreRegisteredSpelling(
+        in text: String,
+        replacements: [WordReplacement]
+    ) -> String {
+        var result = text
+        for item in replacements {
+            let wanted = item.replacement
+            guard let first = wanted.first, first.isLowercase else { continue }
+
+            let capitalized = wanted.prefix(1).uppercased() + wanted.dropFirst()
+            // `$` e `\` seriam lidos como referência de grupo no template.
+            let template = wanted
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "$", with: "\\$")
+            result = result.replacingOccurrences(
+                of: "\\b\(NSRegularExpression.escapedPattern(for: capitalized))\\b",
+                with: template,
+                options: [.regularExpression]
+            )
+        }
+        return result
     }
 
     /// PCM 16 kHz mono em `AVAudioPCMBuffer`, formato que o manager de streaming exige.
