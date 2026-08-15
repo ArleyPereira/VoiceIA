@@ -1,7 +1,7 @@
-# VoiceIA — Ligar a substituição de palavras ao motor Parakeet
+# VoiceIA — Substituição de palavras ligada ao motor Parakeet
 
-Documento de referência para retomar e decidir depois.
-Criado em: **2026-08-13**
+Registro do que foi implementado e do que foi medido.
+Criado em: **2026-08-13** · Atualizado em: **2026-08-15**
 Idioma: português
 Projeto: `/Users/arley/Developer/VoiceIA`
 
@@ -9,103 +9,137 @@ Projeto: `/Users/arley/Developer/VoiceIA`
 
 ## 0. Resumo em uma frase
 
-A lista de substituições existe, persiste e tem CRUD completo, mas **ainda não
-chega ao motor**: a API de vocabulário do FluidAudio só existe no manager de
-*streaming*, e nós transcrevemos em *batch*.
+A ligação está feita e funciona, mas só depois de duas correções que o
+FluidAudio não entrega por padrão — sem elas a lista não corrige nada ou
+**destrói** o texto em português.
 
 ---
 
-## 1. O que já está pronto
+## 1. Como ficou
 
 | Peça | Arquivo |
 |---|---|
-| Modelo | `VoiceIA/Transcription/WordReplacement.swift` |
-| Persistência (JSON em Application Support) | `VoiceIA/Transcription/WordReplacementStore.swift` |
+| Modelo e validação | `VoiceIA/Transcription/WordReplacement.swift` |
+| Persistência (JSON) | `VoiceIA/Transcription/WordReplacementStore.swift` |
 | Modal de CRUD | `VoiceIA/UI/Settings/WordReplacementsModal.swift` |
-| Card na aba Transcrição | `VoiceIA/UI/Settings/SettingsView.swift` |
+| Download do CTC | `VoiceIA/Transcription/Local/LocalCtcModelStore.swift` |
+| Card em Modelos → Local | `VoiceIA/UI/Settings/LocalModelsSettingsView.swift` |
+| Ligação com o motor | `VoiceIA/Transcription/Local/LocalParakeetTranscriptionService.swift` |
 
-O usuário cadastra, edita, exclui, reordena e importa. Nada disso influencia a
-transcrição hoje.
-
----
-
-## 2. Por que a ligação não foi feita
-
-O plano previa passar `CustomVocabularyContext` ao `AsrManager.transcribe`. Essa
-API **não existe** ali.
-
-Verificado no checkout do FluidAudio 0.15.5:
-
-```
-SlidingWindowAsrManager.swift:91
-    public func configureVocabularyBoosting(
-        vocabulary: CustomVocabularyContext,
-        ctcModels: CtcModels,
-        config: VocabularyRescorer.Config? = nil
-    ) async throws
-```
-
-`configureVocabularyBoosting` é o **único** ponto de entrada do vocabulário, e
-pertence ao `SlidingWindowAsrManager` — o manager de streaming. O `AsrManager`
-que usamos em `LocalParakeetTranscriptionService` não tem parâmetro equivalente
-em nenhuma das quatro sobrecargas de `transcribe`.
-
-Confirmado também no CLI do próprio FluidAudio: quando recebe `--custom-vocab`,
-ele instancia o streaming e chama `startStreaming()`, mesmo transcrevendo um
-arquivo (`TranscribeCommand.swift:691-704`). Não há caminho batch.
+O boosting só entra quando **as duas** condições valem: existe substituição
+cadastrada e o CTC está em disco. Fora disso o ditado segue no caminho batch
+de sempre, sem custo nenhum.
 
 ---
 
-## 3. O que a ligação exigiria
+## 2. Por que exigiu um modelo extra
 
-Trocar o motor de batch para streaming em `LocalParakeetTranscriptionService`:
+`configureVocabularyBoosting` só existe no `SlidingWindowAsrManager`; o
+`AsrManager` (batch) não tem parâmetro equivalente em nenhuma das quatro
+sobrecargas de `transcribe`. E o Parakeet TDT 0.6B não tem *head* CTC — quem
+confere no áudio se a palavra falada corresponde ao termo é um modelo auxiliar
+de 110M (98 MB em disco), baixado à parte.
 
-| Hoje | Com vocabulário |
+Como o áudio inteiro já está em memória quando a ditagem termina, entregamos
+tudo de uma vez: `startStreaming()` → `streamAudio(buffer único)` → `finish()`.
+A janela padrão é a mesma 11+2+2 do caminho batch — é streaming na forma e
+batch no efeito.
+
+---
+
+## 3. As duas correções que o padrão não dá
+
+### 3.1 Termos precisam de `ctcTokenIds`
+
+`CustomVocabularyTerm(text:aliases:)` aceita os dois campos de token como
+opcionais, mas o rescorer tem uma guarda:
+
+```
+guard let vocabTokens = term.ctcTokenIds ?? term.tokenIds, !vocabTokens.isEmpty
+else { continue }
+```
+
+Sem tokens, **todo candidato é descartado em silêncio** — o log diz
+`Replacements: 0` e a lista inteira vira enfeite. A tokenização vem do
+`CtcTokenizer.encode(...)`, que o FluidAudio só aplica no caminho de arquivo
+(`loadWithCtcTokens`). Fazemos isso em memória, sem escrever JSON.
+
+### 3.2 O resgate acústico precisa de piso de similaridade
+
+Com os tokens no lugar o rescorer passa a agir — e, em português, age errado.
+O CTC 110M é um modelo inglês; num ditado de 36 s ele produziu:
+
+| | Resultado |
 |---|---|
-| `AsrManager.transcribe(samples, decoderState:, language:)` | `SlidingWindowAsrManager` |
-| uma chamada, resultado direto | `startStreaming()` → `streamAudio(buffer)` → `finish()` |
-| PCM `[Float]` em memória | `AVAudioPCMBuffer` |
+| Correção legítima | `branche` → `branch` ✅ |
+| Trocas destrutivas | `teste falhar` → `commit commit commit commit`, `código` → `commit`, `o` → `android` ❌ |
 
-Isso mexe no trecho mais sensível do app. A ASR responde hoje em ~200 ms com o
-modelo quente (51 s de áudio em 276 ms), número obtido no PR de latência (#4)
-depois de trabalho considerável. O manager de streaming tem outro perfil — foi
-desenhado para emitir parciais durante a fala, não para transcrever de uma vez
-no fim.
-
-Some-se o custo do CTC: o Parakeet 0.6B não tem *head* CTC, então o boosting
-exige baixar e carregar um modelo auxiliar de ~110M (~60–70 MB de RAM), com
-cache e idle unload próprios, espelhando o que já fazemos com o TDT.
+`VocabularyRescorer.Config` tem `spotterRescueMinSimilarity` /
+`spotterRescueMultiWordMinSimilarity`, **ambos desligados por padrão**. Com
+`0.60` nos dois, as cinco trocas destrutivas somem e a correção legítima
+sobrevive (similaridade ~0,92). É o valor usado hoje.
 
 ---
 
-## 4. Opções (nenhuma implementada)
+## 4. Bug do FluidAudio contornado no nosso lado
 
-### A — Migrar para o streaming manager
+Com vocabulário ligado, `finish()` remonta o texto de `confirmado + volátil`
+em vez dos tokens (comentário no código: a remontagem por token desfaria o
+rescoring). Se a **última janela sai vazia** — silêncio no fim da fala, que é
+exatamente o que acontece ao soltar o atalho —, os dois campos ficam vazios e o
+método devolve string vazia, perdendo a ditagem inteira.
 
-- **A favor:** é o único caminho que entrega o recurso como planejado.
-- **Contra:** reescreve o núcleo da transcrição, com risco real de regressão de
-  latência. Precisa de medição antes e depois, nos mesmos cenários do PR #4.
+Reproduzido de forma consistente com um áudio de 13,6 s: o mesmo áudio sem
+boosting devolve 258 caracteres; com boosting, 0.
 
-### B — Manter batch e aplicar find-replace no texto
-
-- **A favor:** trivial, sem custo de RAM nem de latência.
-- **Contra:** o plano descarta isso explicitamente, e com razão: `brand` viraria
-  `branch` também quando a pessoa falasse "brand" de verdade. Sem evidência no
-  áudio, é troca cega.
-
-### C — Deixar como está e reavaliar
-
-- A lista fica cadastrada, pronta para quando a decisão for tomada. O card
-  informa o usuário; hoje ele não promete correção que não acontece.
+Contorno: quando o boosting devolve vazio, repetimos no caminho batch. O log
+`local-parakeet` registra `boosting recuado para batch`.
 
 ---
 
-## 5. Como validar quando for implementado
+## 5. Custos medidos
+
+Áudio sintetizado com `say`, modelo quente, Apple Silicon.
+
+| Áudio | Batch | Streaming sem boosting | Com boosting |
+|---|---|---|---|
+| 5,3 s | 75 ms | 64 ms | 69 ms |
+| 8,9 s | 77 ms | 75 ms | 74 ms |
+| 36,5 s | 160 ms | 340 ms | 815 ms |
+
+Até ~13 s (uma janela só) não há custo. A partir daí a janela deslizante cobra
+~2× e o boosting ~5× sobre o batch. A carga inicial do CTC compila o Core ML e
+leva ~12 s — por isso ele fica quente no cache e sai da RAM no mesmo idle
+unload de 10 min do TDT (ver `Parakeet_Modelo_Em_Memoria_10min.md`).
+
+---
+
+## 6. Limitação que permanece
+
+A janela deslizante degrada o texto em ditagens longas, **independente do
+boosting**: nas emendas entre janelas aparecem repetições e trechos inventados.
+No mesmo áudio de 36,5 s, comparado ao batch:
+
+- `a revisão do código` → `a revisão do curso código`
+- `voltamos atrás` → `volta a desplaz voltamos atrás`
+- `para não o perder` → `para não operar. o perder`
+
+Isso é do `SlidingWindowAsrManager`, não do CTC — aparece igual com o boosting
+desligado. Ou seja: **quem liga a substituição de palavras troca qualidade de
+emenda em ditagens longas por correção de vocabulário.** Por isso o recurso
+exige dois passos deliberados (cadastrar a lista e baixar o modelo) e nunca
+liga sozinho.
+
+---
+
+## 7. Como validar
 
 1. Cadastrar `brand → branch`, `gridle → Gradle`, `anroid → Android`.
-2. Ditar as três palavras em frases naturais, com o modelo quente.
-3. Conferir no log `local-parakeet` que a ASR continua na casa dos ~200 ms —
-   comparar com os números do PR #4 antes de aceitar.
-4. Ditar com a lista **vazia** e confirmar que o CTC nem é carregado.
-5. Ditar "brand" no sentido de marca e confirmar que **não** vira "branch" —
+2. Baixar o modelo em Modelos → Local (card "Substituição de palavras").
+3. Ditar as três palavras em frases naturais, com o modelo quente.
+4. Conferir no log `local-parakeet` que aparece `boosting aplicado` e comparar
+   o tempo com os números da tabela acima.
+5. Ditar com a lista **vazia** e confirmar que o CTC nem é carregado.
+6. Ditar "brand" no sentido de marca e confirmar que **não** vira "branch" —
    é o teste que separa boosting por áudio de find-replace cego.
+7. Ditar 40 s ou mais e conferir as emendas (seção 6).

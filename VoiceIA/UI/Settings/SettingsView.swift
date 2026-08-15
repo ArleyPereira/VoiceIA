@@ -515,6 +515,13 @@ struct SettingsView: View {
                         .font(.system(size: 11.5))
                         .foregroundStyle(Color(red: 1.00, green: 0.70, blue: 0.35))
                         .fixedSize(horizontal: false, vertical: true)
+                } else if viewModel.wordReplacementCount > 0, !viewModel.isCtcModelDownloaded {
+                    // Sem o CTC a lista fica cadastrada e inerte — melhor dizer
+                    // isso aqui do que deixar o usuário achar que está corrigindo.
+                    Text("Falta o modelo da substituição de palavras, em Modelos → Local. Sem ele a lista fica guardada, mas não corrige nada.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color(red: 1.00, green: 0.70, blue: 0.35))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if let message = viewModel.wordReplacementImportMessage {

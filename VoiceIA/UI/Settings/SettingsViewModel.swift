@@ -50,6 +50,7 @@ enum ModelsPane: String, CaseIterable, Identifiable {
 final class SettingsViewModel {
     private let settings: AppSettings
     let parakeetModelStore: LocalParakeetModelStore
+    let ctcModelStore: LocalCtcModelStore
     let historyStore: TranscriptionHistoryStore
     let wordReplacementStore: WordReplacementStore
 
@@ -121,6 +122,7 @@ final class SettingsViewModel {
     init(
         settings: AppSettings,
         parakeetModelStore: LocalParakeetModelStore? = nil,
+        ctcModelStore: LocalCtcModelStore? = nil,
         historyStore: TranscriptionHistoryStore? = nil,
         wordReplacementStore: WordReplacementStore? = nil,
         onTranscriptionPolicyChanged: @escaping () -> Void = {},
@@ -131,6 +133,7 @@ final class SettingsViewModel {
     ) {
         self.settings = settings
         self.parakeetModelStore = parakeetModelStore ?? .shared
+        self.ctcModelStore = ctcModelStore ?? .shared
         self.historyStore = historyStore ?? .shared
         self.wordReplacementStore = wordReplacementStore ?? .shared
         self.onTranscriptionPolicyChanged = onTranscriptionPolicyChanged
@@ -394,6 +397,59 @@ final class SettingsViewModel {
 
     func refreshLocalModelDiskState() {
         parakeetModelStore.refreshDiskState()
+        ctcModelStore.refreshDiskState()
+    }
+
+    // MARK: - Modelo CTC (substituição de palavras)
+
+    var isCtcModelDownloaded: Bool {
+        ctcModelStore.isDownloaded
+    }
+
+    var isCtcModelDownloading: Bool {
+        ctcModelStore.isDownloading
+    }
+
+    var ctcStorageLabel: String {
+        ctcModelStore.onDiskByteCount.voiceIAByteCountLabel
+    }
+
+    /// O card precisa dizer se o download já serve para alguma coisa: baixado
+    /// sem nenhuma substituição cadastrada não corrige nada.
+    var ctcStatusLabel: String {
+        guard isCtcModelDownloaded else { return "~98 MB · opcional" }
+        let count = wordReplacementCount
+        guard count > 0 else {
+            return "\(ctcStorageLabel) · nenhuma substituição cadastrada"
+        }
+        return count == 1
+            ? "\(ctcStorageLabel) · ativo em 1 substituição"
+            : "\(ctcStorageLabel) · ativo em \(count) substituições"
+    }
+
+    func downloadCtcModel() {
+        ctcModelStore.download()
+        Task { @MainActor in
+            while ctcModelStore.isDownloading {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            ctcModelStore.refreshDiskState()
+        }
+    }
+
+    func cancelCtcModelDownload() {
+        ctcModelStore.cancelDownload()
+    }
+
+    func deleteCtcModel() {
+        do {
+            // Solta o CTC da RAM antes de apagar o disco — ele fica quente junto
+            // com o Parakeet, e apagar por baixo deixaria o carregado órfão.
+            onTranscriptionPolicyChanged()
+            try ctcModelStore.delete()
+        } catch {
+            ctcModelStore.reportError(error.localizedDescription)
+        }
     }
 
     // MARK: - Permissões e pastas
