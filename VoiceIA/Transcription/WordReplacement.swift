@@ -73,10 +73,13 @@ extension WordReplacement {
     ///
     /// Repetido sai porque `brand, Brand` mandaria o mesmo alias duas vezes ao
     /// motor; a comparação ignora caixa, como no resto da substituição.
+    ///
+    /// Quebra de linha separa igual à vírgula: o campo é multilinha, então
+    /// Enter é um jeito natural de listar as variantes uma por linha.
     static func parseOriginals(_ text: String) -> [String] {
         var seen = Set<String>()
         return text
-            .split(separator: ",")
+            .split(whereSeparator: { $0 == "," || $0.isNewline })
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { piece in
                 guard !piece.isEmpty else { return false }

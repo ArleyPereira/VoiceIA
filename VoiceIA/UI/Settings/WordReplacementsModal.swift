@@ -184,12 +184,15 @@ struct WordReplacementsModal: View {
     private func row(for item: WordReplacement) -> some View {
         HStack(spacing: 8) {
             // Com muitas variantes o original é quem cede espaço: a grafia final
-            // é a informação que identifica a linha.
+            // é a informação que identifica a linha. Duas linhas antes de cortar
+            // — o suficiente para reconhecer a entrada sem a lista virar um
+            // paredão quando alguém cadastra dez variantes.
             Text(item.original)
                 .font(.system(size: 12.5, design: .monospaced))
                 .foregroundStyle(SettingsTheme.secondaryLabel(colorScheme))
-                .lineLimit(1)
+                .lineLimit(2)
                 .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
                 .help(item.original)
 
             Image(systemName: "arrow.right")
@@ -239,31 +242,29 @@ struct WordReplacementsModal: View {
     /// Formulário de criar e de editar — os dois têm os mesmos campos e a mesma
     /// validação, então mudam só o título e o rótulo do botão.
     private var editor: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 16) {
+            // Um campo embaixo do outro, e o de cima alto: uma lista de
+            // variantes numa caixa de uma linha só rola para fora da vista, e
+            // conferir o que já foi digitado exige navegar com o cursor.
+            field(
+                title: "Original",
+                hint: viewModel.dictatingField == .original
+                    ? "Fale como você costuma falar — o texto vem sem correção, que é o ponto."
+                    : "O que o modelo costuma escrever. Uma variante por linha ou separadas por vírgula.",
+                placeholder: "brand, brant, brent",
+                text: $original,
+                lines: 4,
+                mic: .original
+            )
 
-            HStack(spacing: 10) {
-                micButton(for: .original)
-
-                TextField("Original", text: $original)
-                    .textFieldStyle(GlassFieldStyle())
-                    .help("Separe variantes por vírgula: brand, brant, brent")
-
-                Image(systemName: "arrow.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(SettingsTheme.tertiaryLabel(colorScheme))
-
-                TextField("Substituição", text: $replacement)
-                    .textFieldStyle(GlassFieldStyle())
-            }
-
-            Text(viewModel.dictatingField == .original
-                 ? "Fale a palavra como você costuma falar. O texto vem sem correção, que é o ponto: aqui entra o que o modelo erra."
-                 : "O original é o que o modelo costuma escrever; a substituição é a grafia correta. Separe variantes por vírgula — brand, brant, brent — para todas virarem a mesma grafia.")
-                .font(.system(size: 11.5))
-                .foregroundStyle(SettingsTheme.secondaryLabel(colorScheme))
-                .fixedSize(horizontal: false, vertical: true)
-                .animation(.easeInOut(duration: 0.15), value: viewModel.dictatingField)
+            field(
+                title: "Substituição",
+                hint: "A grafia que deve sair.",
+                placeholder: "branch",
+                text: $replacement,
+                lines: 1,
+                mic: .replacement
+            )
 
             if let errorMessage {
                 Text(errorMessage)
@@ -274,8 +275,43 @@ struct WordReplacementsModal: View {
 
             Spacer(minLength: 0)
         }
+        .animation(.easeInOut(duration: 0.15), value: viewModel.dictatingField)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, 20)
+        .padding(.top, 16)
+    }
+
+    /// Rótulo, microfone, campo e dica — a mesma estrutura nos dois campos.
+    private func field(
+        title: String,
+        hint: String,
+        placeholder: String,
+        text: Binding<String>,
+        lines: Int,
+        mic: SettingsViewModel.WordReplacementField
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(SettingsTheme.primaryLabel(colorScheme))
+
+                Spacer(minLength: 8)
+
+                micButton(for: mic)
+            }
+
+            TextField(placeholder, text: text, axis: .vertical)
+                .textFieldStyle(GlassFieldStyle())
+                // `reservesSpace` fixa a altura: sem isso a caixa cresce ao
+                // digitar e o formulário inteiro pula de posição.
+                .lineLimit(lines, reservesSpace: true)
+
+            Text(hint)
+                .font(.system(size: 11.5))
+                .foregroundStyle(SettingsTheme.secondaryLabel(colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     /// Microfone que preenche o campo falando, em vez de digitar.
