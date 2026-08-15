@@ -493,13 +493,12 @@ struct SettingsView: View {
     }
 
     private var wordReplacementsCard: some View {
-        SettingsCard(
-            title: "Substituição de palavras",
-            subtitle: "Corrige jargão técnico no ditado local — o par vira vocabulário do modelo, não troca cega de texto."
-        ) {
+        // Sem cabeçalho próprio: o título vive na própria linha, junto do total
+        // e do botão. O modal já explica o que a lista faz.
+        SettingsCard {
             VStack(alignment: .leading, spacing: 10) {
                 SettingsRow(
-                    title: "Lista de substituições",
+                    title: "Substituição de palavras",
                     description: viewModel.wordReplacementSummary
                 ) {
                     Button("Abrir") {
