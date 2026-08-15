@@ -17,15 +17,17 @@ final class LocalCtcModelStore {
     static let shared = LocalCtcModelStore()
 
     /// Tamanho aproximado, para o rótulo antes de conhecer o repo.
-    static let estimatedByteCount: Int64 = 120_000_000
+    static let estimatedByteCount: Int64 = 98_000_000
 
     private let logger = Logger(subsystem: "dev.arley.santana.VoiceIA", category: "ctc-store")
     private let variant: CtcModelVariant = .ctc110m
 
     private(set) var isDownloading = false
+    private(set) var downloadProgress: ParakeetDownloadProgress?
     private(set) var onDiskByteCount: Int64 = 0
     private(set) var lastErrorMessage: String?
     private var downloadTask: Task<Void, Never>?
+    private var speedSample: (bytes: Int64, at: Date)?
 
     private init() {
         refreshDiskState()
@@ -51,31 +53,45 @@ final class LocalCtcModelStore {
         lastErrorMessage = message
     }
 
-    /// Baixa o pacote CTC pelo downloader do FluidAudio.
+    /// Baixa o pacote CTC com o mesmo downloader paralelo do Parakeet.
     ///
-    /// Diferente do Parakeet, aqui não usamos o downloader paralelo próprio: são
-    /// dois arquivos e ~120 MB, então a serialidade do `ModelHub` não incomoda
-    /// como incomodava nos 460 MB do TDT.
+    /// O downloader do FluidAudio não expõe progresso e busca um arquivo por
+    /// vez; usando o nosso, o card do CTC mostra os mesmos indicadores do card
+    /// principal — porcentagem, velocidade e tamanho.
     func download() {
         guard !isDownloading else { return }
         lastErrorMessage = nil
         isDownloading = true
+        speedSample = nil
+        downloadProgress = ParakeetDownloadProgress(
+            fractionCompleted: 0,
+            bytesReceived: 0,
+            totalBytes: Self.estimatedByteCount,
+            bytesPerSecond: 0
+        )
+
+        let targetDir = cacheDirectory
 
         downloadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                _ = try await CtcModels.download(variant: self.variant)
+                try await ParakeetFastDownloader.download(.ctc110m, to: targetDir) { received, total in
+                    Task { @MainActor in
+                        self.applyDownloadProgress(received: received, total: total)
+                    }
+                }
                 try Task.checkCancellation()
+
                 await MainActor.run {
-                    self.isDownloading = false
+                    self.finishDownload()
                     self.refreshDiskState()
                     self.logger.notice("CTC 110M baixado (compile ocorre no 1º uso).")
                 }
             } catch is CancellationError {
-                await MainActor.run { self.isDownloading = false }
+                await MainActor.run { self.finishDownload() }
             } catch {
                 await MainActor.run {
-                    self.isDownloading = false
+                    self.finishDownload()
                     self.lastErrorMessage = error.localizedDescription
                     self.logger.error("Download do CTC falhou: \(error.localizedDescription, privacy: .public)")
                 }
@@ -86,7 +102,39 @@ final class LocalCtcModelStore {
     func cancelDownload() {
         downloadTask?.cancel()
         downloadTask = nil
+        finishDownload()
+    }
+
+    private func finishDownload() {
         isDownloading = false
+        downloadProgress = nil
+        speedSample = nil
+    }
+
+    /// Bytes vêm direto do downloader — os `.partial` são pré-alocados, então
+    /// medir o tamanho em disco daria 100% logo no começo.
+    private func applyDownloadProgress(received: Int64, total: Int64) {
+        let total = max(total, 1)
+        let fraction = min(1, max(0, Double(received) / Double(total)))
+
+        let now = Date()
+        var speed = downloadProgress?.bytesPerSecond ?? 0
+        if let sample = speedSample {
+            let elapsed = now.timeIntervalSince(sample.at)
+            if elapsed >= 0.4 {
+                speed = max(0, Double(received - sample.bytes) / elapsed)
+                speedSample = (received, now)
+            }
+        } else {
+            speedSample = (received, now)
+        }
+
+        downloadProgress = ParakeetDownloadProgress(
+            fractionCompleted: fraction,
+            bytesReceived: received,
+            totalBytes: total,
+            bytesPerSecond: speed
+        )
     }
 
     func delete() throws {

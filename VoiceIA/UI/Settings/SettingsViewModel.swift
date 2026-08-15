@@ -492,6 +492,16 @@ final class SettingsViewModel {
             : "\(ctcStorageLabel) · ativo em \(count) substituições"
     }
 
+    var detailedCtcDownloadProgress: (fraction: Double, percentLabel: String, speedLabel: String, sizeLabel: String)? {
+        guard let progress = ctcModelStore.downloadProgress else { return nil }
+        return (
+            progress.fractionCompleted,
+            progress.percentLabel,
+            progress.speedLabel,
+            progress.sizeLabel
+        )
+    }
+
     func downloadCtcModel() {
         ctcModelStore.download()
         Task { @MainActor in

@@ -95,7 +95,7 @@ final class LocalParakeetModelStore {
         downloadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await ParakeetFastDownloader.download(to: targetDir) { received, total in
+                try await ParakeetFastDownloader.download(.parakeet, to: targetDir) { received, total in
                     Task { @MainActor in
                         self.applyDownloadProgress(received: received, total: total)
                     }

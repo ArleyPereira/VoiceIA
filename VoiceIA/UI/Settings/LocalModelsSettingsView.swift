@@ -183,10 +183,24 @@ struct LocalModelsSettingsView: View {
                 ctcActionButton(downloaded: downloaded, downloading: downloading)
             }
 
-            if downloading {
-                ProgressView()
-                    .progressViewStyle(.linear)
-                    .tint(SettingsTheme.accent)
+            if downloading, let progress = viewModel.detailedCtcDownloadProgress {
+                VStack(alignment: .leading, spacing: 6) {
+                    ProgressView(value: progress.fraction)
+                        .tint(SettingsTheme.accent)
+                    HStack {
+                        HStack(spacing: 8) {
+                            Text(progress.percentLabel)
+                            Text("·")
+                                .foregroundStyle(.white.opacity(0.35))
+                            Text(progress.speedLabel)
+                        }
+                        Spacer(minLength: 8)
+                        Text(progress.sizeLabel)
+                    }
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.65))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             if let error = viewModel.ctcModelStore.lastErrorMessage {
