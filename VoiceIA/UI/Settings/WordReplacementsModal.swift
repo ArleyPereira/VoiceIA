@@ -41,7 +41,7 @@ struct WordReplacementsModal: View {
         // Fechar o modal gravando descarta: transcrever para um formulário que
         // saiu da tela só gastaria bateria e sujaria a pasta de gravações.
         .onDisappear {
-            if viewModel.dictatingField != nil {
+            if viewModel.isDictatingOriginal {
                 viewModel.cancelFieldDictation()
             }
         }
@@ -184,15 +184,13 @@ struct WordReplacementsModal: View {
     private func row(for item: WordReplacement) -> some View {
         HStack(spacing: 8) {
             // Com muitas variantes o original é quem cede espaço: a grafia final
-            // é a informação que identifica a linha. Duas linhas antes de cortar
-            // — o suficiente para reconhecer a entrada sem a lista virar um
-            // paredão quando alguém cadastra dez variantes.
+            // é a informação que identifica a linha. O texto inteiro fica no
+            // tooltip, e o formulário é onde ele é lido por completo.
             Text(item.original)
                 .font(.system(size: 12.5, design: .monospaced))
                 .foregroundStyle(SettingsTheme.secondaryLabel(colorScheme))
-                .lineLimit(2)
+                .lineLimit(1)
                 .truncationMode(.tail)
-                .fixedSize(horizontal: false, vertical: true)
                 .help(item.original)
 
             Image(systemName: "arrow.right")
@@ -248,22 +246,25 @@ struct WordReplacementsModal: View {
             // conferir o que já foi digitado exige navegar com o cursor.
             field(
                 title: "Original",
-                hint: viewModel.dictatingField == .original
+                hint: viewModel.isDictatingOriginal
                     ? "Fale como você costuma falar — o texto vem sem correção, que é o ponto."
                     : "O que o modelo costuma escrever. Uma variante por linha ou separadas por vírgula.",
                 placeholder: "brand, brant, brent",
                 text: $original,
                 lines: 4,
-                mic: .original
+                showsMic: true
             )
 
+            // Sem microfone: a grafia final é decisão do usuário e precisa sair
+            // exatamente como ele quer. Ditá-la traria de volta o palpite do
+            // modelo, que é o que esta tela existe para corrigir.
             field(
                 title: "Substituição",
-                hint: "A grafia que deve sair.",
+                hint: "A grafia que deve sair. Digite exatamente como quer que apareça.",
                 placeholder: "branch",
                 text: $replacement,
                 lines: 1,
-                mic: .replacement
+                showsMic: false
             )
 
             if let errorMessage {
@@ -275,7 +276,7 @@ struct WordReplacementsModal: View {
 
             Spacer(minLength: 0)
         }
-        .animation(.easeInOut(duration: 0.15), value: viewModel.dictatingField)
+        .animation(.easeInOut(duration: 0.15), value: viewModel.isDictatingOriginal)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, 20)
         .padding(.top, 16)
@@ -288,7 +289,7 @@ struct WordReplacementsModal: View {
         placeholder: String,
         text: Binding<String>,
         lines: Int,
-        mic: SettingsViewModel.WordReplacementField
+        showsMic: Bool
     ) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
@@ -298,7 +299,9 @@ struct WordReplacementsModal: View {
 
                 Spacer(minLength: 8)
 
-                micButton(for: mic)
+                if showsMic {
+                    micButton
+                }
             }
 
             TextField(placeholder, text: text, axis: .vertical)
@@ -319,19 +322,15 @@ struct WordReplacementsModal: View {
     /// Reaproveita o ditado inteiro — a mesma barra flutuante aparece, com
     /// duração, ondas e o ✕ para descartar. O texto não é inserido em lugar
     /// nenhum: volta direto para este campo.
-    private func micButton(for field: SettingsViewModel.WordReplacementField) -> some View {
-        let isRecording = viewModel.dictatingField == field
-        let isBusyElsewhere = viewModel.dictatingField != nil && !isRecording
+    private var micButton: some View {
+        let isRecording = viewModel.isDictatingOriginal
 
         return Button {
-            viewModel.dictate(into: field) { text in
-                switch field {
-                // Ditar no original **acrescenta** uma variante em vez de
-                // trocar: o jeito natural de montar a lista é falar a mesma
-                // palavra algumas vezes e recolher as grafias que saírem.
-                case .original: original = appendVariant(text, to: original)
-                case .replacement: replacement = text
-                }
+            // Ditar **acrescenta** uma variante em vez de trocar: o jeito
+            // natural de montar a lista é falar a mesma palavra algumas vezes e
+            // recolher as grafias que saírem.
+            viewModel.dictateOriginal { text in
+                original = appendVariant(text, to: original)
                 errorMessage = nil
             }
         } label: {
@@ -350,8 +349,6 @@ struct WordReplacementsModal: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(isBusyElsewhere)
-        .opacity(isBusyElsewhere ? 0.4 : 1)
         .help(isRecording ? "Encerrar e preencher" : "Preencher falando")
         .animation(.easeInOut(duration: 0.15), value: isRecording)
     }

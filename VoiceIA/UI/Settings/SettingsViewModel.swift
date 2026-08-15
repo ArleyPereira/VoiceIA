@@ -132,34 +132,29 @@ final class SettingsViewModel {
     /// Confirmação da última importação, exibida no card da aba Transcrição.
     private(set) var wordReplacementImportMessage: String?
 
-    /// Qual campo do modal está gravando agora (`nil` = nenhum).
-    private(set) var dictatingField: WordReplacementField?
-
-    /// Campos do formulário que aceitam ditagem por microfone.
-    enum WordReplacementField {
-        case original
-        case replacement
-    }
-
-    /// Grava pelo microfone e devolve o texto ao campo indicado.
+    /// `true` enquanto o campo "Original" está gravando.
     ///
-    /// Clicar de novo no mesmo microfone encerra a gravação — mesmo gesto do
-    /// atalho global, sem precisar mirar na barra flutuante.
-    func dictate(
-        into field: WordReplacementField,
-        onText: @escaping (String) -> Void
-    ) {
-        if dictatingField != nil {
+    /// Só ele tem microfone: a substituição é a grafia que o usuário decide,
+    /// então tem de ser digitada exatamente como ele quer — ditá-la só traria
+    /// de volta o palpite do modelo, que é justamente o que se quer corrigir.
+    private(set) var isDictatingOriginal = false
+
+    /// Grava pelo microfone e devolve o texto ao campo "Original".
+    ///
+    /// Clicar de novo no microfone encerra a gravação — mesmo gesto do atalho
+    /// global, sem precisar mirar na barra flutuante.
+    func dictateOriginal(onText: @escaping (String) -> Void) {
+        if isDictatingOriginal {
             onFieldDictationStopRequested()
             return
         }
 
-        dictatingField = field
+        isDictatingOriginal = true
         // O campo "Original" guarda a grafia **errada** do modelo; corrigi-la na
-        // captura tornaria impossível cadastrá-la.
-        onFieldDictationRequested(field == .original) { [weak self] text in
+        // captura tornaria impossível cadastrá-la — daí o texto cru.
+        onFieldDictationRequested(true) { [weak self] text in
             guard let self else { return }
-            self.dictatingField = nil
+            self.isDictatingOriginal = false
             guard let text = Self.cleanedDictation(text) else { return }
             onText(text)
         }
@@ -167,7 +162,7 @@ final class SettingsViewModel {
 
     /// Descarta a gravação em andamento sem preencher campo nenhum.
     func cancelFieldDictation() {
-        guard dictatingField != nil else { return }
+        guard isDictatingOriginal else { return }
         onFieldDictationCancelRequested()
     }
 
