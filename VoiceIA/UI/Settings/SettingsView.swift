@@ -71,6 +71,9 @@ struct SettingsView: View {
         .onDisappear {
             viewModel.cancelHotkeyCapture()
         }
+        .sheet(isPresented: $viewModel.isShowingWordReplacements) {
+            WordReplacementsModal(viewModel: viewModel)
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             viewModel.refreshPermissions()
             viewModel.refreshLocalModelDiskState()
@@ -482,6 +485,48 @@ struct SettingsView: View {
                     description: "Modelo econômico, adequado a ditados curtos."
                 ) {
                     EmptyView()
+                }
+            }
+
+            wordReplacementsCard
+        }
+    }
+
+    private var wordReplacementsCard: some View {
+        SettingsCard(
+            title: "Substituição de palavras",
+            subtitle: "Corrige jargão técnico no ditado local — o par vira vocabulário do modelo, não troca cega de texto."
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                SettingsRow(
+                    title: "Lista de substituições",
+                    description: viewModel.wordReplacementSummary
+                ) {
+                    Button("Abrir") {
+                        viewModel.isShowingWordReplacements = true
+                    }
+                    .buttonStyle(GhostButtonStyle())
+                }
+
+                // A lista só tem efeito no motor local; na API o áudio vai para
+                // a OpenAI e não há como injetar vocabulário.
+                if !viewModel.usesLocalTranscription {
+                    Text("O ditado está usando a API da OpenAI. A lista vale apenas no modelo local.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color(red: 1.00, green: 0.70, blue: 0.35))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let message = viewModel.wordReplacementImportMessage {
+                    Text(message)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color(red: 0.40, green: 0.90, blue: 0.62))
+                        .transition(.opacity)
+                        .task(id: message) {
+                            try? await Task.sleep(for: .seconds(5))
+                            guard !Task.isCancelled else { return }
+                            viewModel.clearWordReplacementImportMessage()
+                        }
                 }
             }
         }

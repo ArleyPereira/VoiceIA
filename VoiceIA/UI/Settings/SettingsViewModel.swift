@@ -51,6 +51,7 @@ final class SettingsViewModel {
     private let settings: AppSettings
     let parakeetModelStore: LocalParakeetModelStore
     let historyStore: TranscriptionHistoryStore
+    let wordReplacementStore: WordReplacementStore
 
     /// Janela AppKit que hospeda as configurações (para centralizar diálogos filhos).
     weak var hostWindow: NSWindow?
@@ -111,10 +112,17 @@ final class SettingsViewModel {
     /// Sub-aba ativa em Modelos.
     var selectedModelsPane: ModelsPane = .api
 
+    /// Modal de substituição de palavras aberta sobre as configurações.
+    var isShowingWordReplacements = false
+
+    /// Confirmação da última importação, exibida no card da aba Transcrição.
+    private(set) var wordReplacementImportMessage: String?
+
     init(
         settings: AppSettings,
         parakeetModelStore: LocalParakeetModelStore? = nil,
         historyStore: TranscriptionHistoryStore? = nil,
+        wordReplacementStore: WordReplacementStore? = nil,
         onTranscriptionPolicyChanged: @escaping () -> Void = {},
         onAppearanceThemeChanged: @escaping () -> Void = {},
         onRecordingHUDStyleChanged: @escaping () -> Void = {},
@@ -124,6 +132,7 @@ final class SettingsViewModel {
         self.settings = settings
         self.parakeetModelStore = parakeetModelStore ?? .shared
         self.historyStore = historyStore ?? .shared
+        self.wordReplacementStore = wordReplacementStore ?? .shared
         self.onTranscriptionPolicyChanged = onTranscriptionPolicyChanged
         self.onAppearanceThemeChanged = onAppearanceThemeChanged
         self.onRecordingHUDStyleChanged = onRecordingHUDStyleChanged
@@ -269,6 +278,29 @@ final class SettingsViewModel {
     }
 
     /// `true` quando o ditado usa o modelo local deste Mac.
+    // MARK: - Substituição de palavras
+
+    var wordReplacementCount: Int { wordReplacementStore.items.count }
+
+    /// Resumo do card: quantidade cadastrada ou convite para criar a primeira.
+    var wordReplacementSummary: String {
+        switch wordReplacementCount {
+        case 0: return "Nenhuma substituição cadastrada."
+        case 1: return "1 substituição cadastrada."
+        default: return "\(wordReplacementCount) substituições cadastradas."
+        }
+    }
+
+    func reportWordReplacementImport(count: Int) {
+        wordReplacementImportMessage = count == 1
+            ? "1 substituição importada."
+            : "\(count) substituições importadas."
+    }
+
+    func clearWordReplacementImportMessage() {
+        wordReplacementImportMessage = nil
+    }
+
     var usesLocalTranscription: Bool {
         get { settings.transcriptionBackend == "local" }
         set {
