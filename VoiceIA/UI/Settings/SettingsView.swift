@@ -39,7 +39,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return "Início automático, atalho e permissões do macOS."
         case .appearance: return "Tema da interface e visual da barra de gravação."
         case .models: return "API OpenAI e modelo local."
-        case .transcription: return "Idioma e modelo usados no ditado."
+        case .transcription: return "Idioma do ditado e substituição de palavras."
         case .history: return "Transcrições salvas neste Mac."
         case .recordings: return "O que fazer com os arquivos de áudio."
         }
@@ -448,6 +448,17 @@ struct SettingsView: View {
                 }
             }
 
+            // Fica aqui, e não na aba Transcrição: é o modelo **da API**, e só
+            // faz sentido ao lado da chave que o habilita.
+            SettingsCard(title: "Modelo") {
+                SettingsRow(
+                    title: viewModel.modelLabel,
+                    description: "Modelo econômico, adequado a ditados curtos."
+                ) {
+                    EmptyView()
+                }
+            }
+
             SettingsCard(title: "Créditos") {
                 VStack(spacing: 14) {
                     SettingsRow(
@@ -475,15 +486,6 @@ struct SettingsView: View {
                 subtitle: "Enviado à API, exceto em “Detectar automaticamente”, que omite o campo."
             ) {
                 languageMenu
-            }
-
-            SettingsCard(title: "Modelo") {
-                SettingsRow(
-                    title: viewModel.modelLabel,
-                    description: "Modelo econômico, adequado a ditados curtos."
-                ) {
-                    EmptyView()
-                }
             }
 
             wordReplacementsCard
