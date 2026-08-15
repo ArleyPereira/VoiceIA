@@ -140,6 +140,25 @@ final class WordReplacementStore {
         persist()
     }
 
+    /// Coloca `id` na posição que `targetID` ocupa agora.
+    ///
+    /// Só mexe na memória: durante um arraste isto é chamado a cada linha que o
+    /// cursor cruza, e gravar em disco a cada passo seria dezenas de escritas
+    /// por gesto. Quem fecha é `commitReorder()`, no soltar.
+    func reorder(id: UUID, toIndexOf targetID: UUID) {
+        guard id != targetID,
+              let from = items.firstIndex(where: { $0.id == id }),
+              let to = items.firstIndex(where: { $0.id == targetID }) else { return }
+        let item = items.remove(at: from)
+        items.insert(item, at: to)
+    }
+
+    /// Grava a ordem alcançada pelo arraste.
+    func commitReorder() {
+        reindex()
+        persist()
+    }
+
     // MARK: - Importação
 
     /// Formato simples: `[{ "original": "brand", "replacement": "branch" }]`

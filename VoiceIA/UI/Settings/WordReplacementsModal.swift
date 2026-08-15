@@ -22,6 +22,8 @@ struct WordReplacementsModal: View {
     @State private var original = ""
     @State private var replacement = ""
     @State private var errorMessage: String?
+    /// Item que está sendo arrastado agora (`nil` fora do gesto).
+    @State private var draggingID: UUID?
 
     private var store: WordReplacementStore { viewModel.wordReplacementStore }
 
@@ -149,6 +151,19 @@ struct WordReplacementsModal: View {
             VStack(spacing: 8) {
                 ForEach(store.items) { item in
                     row(for: item)
+                        .opacity(draggingID == item.id ? 0.35 : 1)
+                        .onDrag {
+                            draggingID = item.id
+                            return NSItemProvider(object: item.id.uuidString as NSString)
+                        }
+                        .onDrop(
+                            of: [.text],
+                            delegate: ReorderDropDelegate(
+                                target: item,
+                                store: store,
+                                draggingID: $draggingID
+                            )
+                        )
                 }
 
                 if let errorMessage {
@@ -160,6 +175,7 @@ struct WordReplacementsModal: View {
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 14)
+            .animation(.easeInOut(duration: 0.18), value: store.items.map(\.id))
         }
         .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -406,5 +422,37 @@ struct WordReplacementsModal: View {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+}
+
+/// Reordena a lista enquanto o item arrastado passa por cima das outras linhas.
+///
+/// A troca acontece no `dropEntered`, não no soltar: é o que faz a lista abrir
+/// espaço embaixo do cursor, em vez de o usuário soltar às cegas e só então
+/// descobrir onde o item caiu.
+private struct ReorderDropDelegate: DropDelegate {
+    let target: WordReplacement
+    let store: WordReplacementStore
+    @Binding var draggingID: UUID?
+
+    func dropEntered(info: DropInfo) {
+        MainActor.assumeIsolated {
+            guard let draggingID, draggingID != target.id else { return }
+            store.reorder(id: draggingID, toIndexOf: target.id)
+        }
+    }
+
+    /// Sem isto o cursor mostra o "+" de cópia — aqui nada é copiado.
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        MainActor.assumeIsolated {
+            // A ordem já está na tela; só falta gravá-la.
+            store.commitReorder()
+            draggingID = nil
+        }
+        return true
     }
 }
