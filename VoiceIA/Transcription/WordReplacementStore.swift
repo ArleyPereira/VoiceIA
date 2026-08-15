@@ -62,25 +62,30 @@ final class WordReplacementStore {
         replacement: String,
         ignoring id: UUID? = nil
     ) -> WordReplacementValidationError? {
-        let cleanOriginal = original.trimmingCharacters(in: .whitespacesAndNewlines)
+        let variants = WordReplacement.parseOriginals(original)
         let cleanReplacement = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !cleanOriginal.isEmpty, !cleanReplacement.isEmpty else {
+        guard !variants.isEmpty, !cleanReplacement.isEmpty else {
             return .emptyField
         }
-        guard cleanOriginal.count >= WordReplacement.minimumLength,
+        // Cada variante é medida sozinha: uma linha curta no meio da lista
+        // ("brand, or, brant") passaria despercebida se olhássemos o campo todo.
+        guard variants.allSatisfy({ $0.count >= WordReplacement.minimumLength }),
               cleanReplacement.count >= WordReplacement.minimumLength else {
             return .tooShort(minimum: WordReplacement.minimumLength)
         }
 
-        // Duplicata é do **original**: dois pares com a mesma origem se
-        // contradizem. Comparação sem diferenciar maiúsculas porque o modelo
-        // não é consistente na capitalização.
-        let alreadyExists = items.contains {
-            $0.id != id && $0.original.caseInsensitiveCompare(cleanOriginal) == .orderedSame
-        }
-        if alreadyExists {
-            return .duplicated(original: cleanOriginal)
+        // Duplicata é por **variante**: duas linhas que reivindicam a mesma
+        // origem se contradizem, mesmo que o resto do campo seja diferente.
+        // Comparação sem diferenciar maiúsculas porque o modelo não é
+        // consistente na capitalização.
+        let taken = Set(
+            items.filter { $0.id != id }
+                .flatMap(\.originals)
+                .map { $0.lowercased() }
+        )
+        if let clash = variants.first(where: { taken.contains($0.lowercased()) }) {
+            return .duplicated(original: clash)
         }
         return nil
     }
@@ -94,7 +99,7 @@ final class WordReplacementStore {
             return error
         }
         let item = WordReplacement(
-            original: original.trimmingCharacters(in: .whitespacesAndNewlines),
+            original: WordReplacement.normalizedOriginal(original),
             replacement: replacement.trimmingCharacters(in: .whitespacesAndNewlines),
             sortIndex: items.count
         )
@@ -110,7 +115,7 @@ final class WordReplacementStore {
             return error
         }
         guard let index = items.firstIndex(where: { $0.id == id }) else { return nil }
-        items[index].original = original.trimmingCharacters(in: .whitespacesAndNewlines)
+        items[index].original = WordReplacement.normalizedOriginal(original)
         items[index].replacement = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
         persist()
         return nil
@@ -197,9 +202,12 @@ final class WordReplacementStore {
         var candidates: [(original: String, replacement: String)] = []
 
         if let file = try? decoder.decode(FluidAudioFile.self, from: data) {
-            // Cada alias vira um par apontando para a grafia canônica.
-            candidates = file.terms.flatMap { term in
-                (term.aliases ?? []).map { (original: $0, replacement: term.text) }
+            // Os aliases de um termo cabem numa linha só, separados por vírgula
+            // — é a mesma forma que o campo aceita ao digitar.
+            candidates = file.terms.compactMap { term in
+                let aliases = term.aliases ?? []
+                guard !aliases.isEmpty else { return nil }
+                return (original: aliases.joined(separator: ", "), replacement: term.text)
             }
         } else if let entries = try? decoder.decode([SimpleEntry].self, from: data) {
             candidates = entries.map { (original: $0.original, replacement: $0.replacement) }

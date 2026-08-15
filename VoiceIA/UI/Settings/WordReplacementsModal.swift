@@ -183,9 +183,14 @@ struct WordReplacementsModal: View {
 
     private func row(for item: WordReplacement) -> some View {
         HStack(spacing: 8) {
+            // Com muitas variantes o original é quem cede espaço: a grafia final
+            // é a informação que identifica a linha.
             Text(item.original)
                 .font(.system(size: 12.5, design: .monospaced))
                 .foregroundStyle(SettingsTheme.secondaryLabel(colorScheme))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help(item.original)
 
             Image(systemName: "arrow.right")
                 .font(.system(size: 10, weight: .semibold))
@@ -194,6 +199,8 @@ struct WordReplacementsModal: View {
             Text(item.replacement)
                 .font(.system(size: 12.5, weight: .medium, design: .monospaced))
                 .foregroundStyle(SettingsTheme.primaryLabel(colorScheme))
+                .lineLimit(1)
+                .layoutPriority(1)
 
             Spacer(minLength: 8)
 
@@ -240,6 +247,7 @@ struct WordReplacementsModal: View {
 
                 TextField("Original", text: $original)
                     .textFieldStyle(GlassFieldStyle())
+                    .help("Separe variantes por vírgula: brand, brant, brent")
 
                 Image(systemName: "arrow.right")
                     .font(.system(size: 11, weight: .semibold))
@@ -251,7 +259,7 @@ struct WordReplacementsModal: View {
 
             Text(viewModel.dictatingField == .original
                  ? "Fale a palavra como você costuma falar. O texto vem sem correção, que é o ponto: aqui entra o que o modelo erra."
-                 : "O original é o que o modelo costuma escrever; a substituição é a grafia correta.")
+                 : "O original é o que o modelo costuma escrever; a substituição é a grafia correta. Separe variantes por vírgula — brand, brant, brent — para todas virarem a mesma grafia.")
                 .font(.system(size: 11.5))
                 .foregroundStyle(SettingsTheme.secondaryLabel(colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
@@ -282,7 +290,10 @@ struct WordReplacementsModal: View {
         return Button {
             viewModel.dictate(into: field) { text in
                 switch field {
-                case .original: original = text
+                // Ditar no original **acrescenta** uma variante em vez de
+                // trocar: o jeito natural de montar a lista é falar a mesma
+                // palavra algumas vezes e recolher as grafias que saírem.
+                case .original: original = appendVariant(text, to: original)
                 case .replacement: replacement = text
                 }
                 errorMessage = nil
@@ -307,6 +318,18 @@ struct WordReplacementsModal: View {
         .opacity(isBusyElsewhere ? 0.4 : 1)
         .help(isRecording ? "Encerrar e preencher" : "Preencher falando")
         .animation(.easeInOut(duration: 0.15), value: isRecording)
+    }
+
+    /// Junta a variante ditada às que já estão no campo, sem repetir.
+    ///
+    /// Falar duas vezes e o modelo escrever igual é o caso comum — repetir a
+    /// mesma grafia no campo não acrescentaria nada.
+    private func appendVariant(_ variant: String, to current: String) -> String {
+        let existing = WordReplacement.parseOriginals(current)
+        guard !existing.contains(where: { $0.caseInsensitiveCompare(variant) == .orderedSame }) else {
+            return WordReplacement.normalizedOriginal(current)
+        }
+        return (existing + [variant]).joined(separator: ", ")
     }
 
     // MARK: - Rodapé

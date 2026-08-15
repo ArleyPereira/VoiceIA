@@ -341,9 +341,10 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
 
     /// Converte a lista do usuário no vocabulário do FluidAudio.
     ///
-    /// O par vira **um termo com alias**: `text` é a grafia desejada e o alias é
-    /// o que o modelo costuma escrever. Não é find-replace — o CTC confere no
-    /// áudio se o trecho realmente soa como o termo antes de trocar.
+    /// O par vira **um termo com aliases**: `text` é a grafia desejada e os
+    /// aliases são as variantes que o modelo costuma escrever. Não é
+    /// find-replace — o CTC confere no áudio se o trecho realmente soa como o
+    /// termo antes de trocar.
     ///
     /// O `ctcTokenIds` não é opcional na prática: sem ele o rescorer descarta
     /// todo candidato em silêncio, e a lista inteira vira enfeite.
@@ -353,10 +354,11 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
     ) -> [CustomVocabularyTerm] {
         replacements.compactMap { item in
             let ids = tokenizer.encode(item.replacement)
-            guard !ids.isEmpty else { return nil }
+            let aliases = item.originals
+            guard !ids.isEmpty, !aliases.isEmpty else { return nil }
             return CustomVocabularyTerm(
                 text: item.replacement,
-                aliases: [item.original],
+                aliases: aliases,
                 ctcTokenIds: ids
             )
         }

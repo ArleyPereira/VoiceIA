@@ -8,7 +8,12 @@ import Foundation
 /// então "brand" só vira "branch" quando o som combina.
 struct WordReplacement: Identifiable, Codable, Equatable {
     let id: UUID
-    /// O que o modelo costuma escrever (`brand`, `gridle`, `anroid`).
+    /// O que o modelo costuma escrever, separado por vírgula quando há mais de
+    /// uma variante (`brand, brant, brent`).
+    ///
+    /// Continua sendo uma `String` e não `[String]` porque é assim que o arquivo
+    /// já está em disco, e porque é o texto que o campo mostra e edita. Quem
+    /// precisa das variantes soltas usa `originals`.
     var original: String
     /// A grafia desejada (`branch`, `Gradle`, `Android`).
     var replacement: String
@@ -54,4 +59,33 @@ extension WordReplacement {
     /// caracteres; ali quem segura são os pisos de similaridade (0,85 no
     /// caminho principal), bem acima do padrão da biblioteca.
     static let minimumLength = 2
+
+    /// As variantes do lado original, já separadas e limpas.
+    ///
+    /// Um cadastro só vira um termo do FluidAudio com vários *aliases* — que é
+    /// exatamente como a biblioteca modela isso. Sem isto, cada variante exigia
+    /// uma linha própria repetindo a mesma substituição.
+    var originals: [String] {
+        Self.parseOriginals(original)
+    }
+
+    /// Quebra por vírgula, tira espaços e descarta vazios e repetidos.
+    ///
+    /// Repetido sai porque `brand, Brand` mandaria o mesmo alias duas vezes ao
+    /// motor; a comparação ignora caixa, como no resto da substituição.
+    static func parseOriginals(_ text: String) -> [String] {
+        var seen = Set<String>()
+        return text
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { piece in
+                guard !piece.isEmpty else { return false }
+                return seen.insert(piece.lowercased()).inserted
+            }
+    }
+
+    /// Forma canônica para gravar: variantes separadas por vírgula e espaço.
+    static func normalizedOriginal(_ text: String) -> String {
+        parseOriginals(text).joined(separator: ", ")
+    }
 }
