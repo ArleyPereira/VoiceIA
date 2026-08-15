@@ -42,6 +42,14 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
     }
 
     func transcribe(audioURL: URL, pcmSamples: [Float]? = nil) async throws -> String {
+        try await transcribe(audioURL: audioURL, pcmSamples: pcmSamples, applyWordReplacements: true)
+    }
+
+    func transcribe(
+        audioURL: URL,
+        pcmSamples: [Float]?,
+        applyWordReplacements: Bool
+    ) async throws -> String {
         cancelIdleUnload()
 
         let pipelineStart = Date()
@@ -51,7 +59,7 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
             (
                 settings.transcriptionLanguage,
                 modelStore.isDownloaded,
-                WordReplacementStore.shared.items,
+                applyWordReplacements ? WordReplacementStore.shared.items : [],
                 LocalCtcModelStore.shared.isDownloaded
             )
         }

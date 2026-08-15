@@ -66,6 +66,19 @@ final class SettingsViewModel {
     /// Notifica o AppState para mostrar/esconder a barra conforme o estilo.
     var onRecordingHUDStyleChanged: () -> Void
 
+    /// Pede ao AppState uma ditagem cujo texto volta para um campo do app.
+    ///
+    /// O `Bool` pede o texto **cru**, sem substituição de palavras. A conclusão
+    /// vem com `nil` quando não houve texto (cancelado, silêncio, erro) — é o
+    /// que tira o campo do estado "gravando".
+    var onFieldDictationRequested: (Bool, @escaping (String?) -> Void) -> Void
+
+    /// Encerra a ditagem de campo em andamento e transcreve.
+    var onFieldDictationStopRequested: () -> Void
+
+    /// Descarta a ditagem de campo em andamento sem transcrever.
+    var onFieldDictationCancelRequested: () -> Void
+
     /// Notifica o AppState para re-registrar o atalho global.
     var onDictationHotkeyChanged: () -> Void
 
@@ -119,6 +132,57 @@ final class SettingsViewModel {
     /// Confirmação da última importação, exibida no card da aba Transcrição.
     private(set) var wordReplacementImportMessage: String?
 
+    /// Qual campo do modal está gravando agora (`nil` = nenhum).
+    private(set) var dictatingField: WordReplacementField?
+
+    /// Campos do formulário que aceitam ditagem por microfone.
+    enum WordReplacementField {
+        case original
+        case replacement
+    }
+
+    /// Grava pelo microfone e devolve o texto ao campo indicado.
+    ///
+    /// Clicar de novo no mesmo microfone encerra a gravação — mesmo gesto do
+    /// atalho global, sem precisar mirar na barra flutuante.
+    func dictate(
+        into field: WordReplacementField,
+        onText: @escaping (String) -> Void
+    ) {
+        if dictatingField != nil {
+            onFieldDictationStopRequested()
+            return
+        }
+
+        dictatingField = field
+        // O campo "Original" guarda a grafia **errada** do modelo; corrigi-la na
+        // captura tornaria impossível cadastrá-la.
+        onFieldDictationRequested(field == .original) { [weak self] text in
+            guard let self else { return }
+            self.dictatingField = nil
+            guard let text = Self.cleanedDictation(text) else { return }
+            onText(text)
+        }
+    }
+
+    /// Descarta a gravação em andamento sem preencher campo nenhum.
+    func cancelFieldDictation() {
+        guard dictatingField != nil else { return }
+        onFieldDictationCancelRequested()
+    }
+
+    /// Prepara o texto ditado para um campo de uma palavra ou expressão curta.
+    ///
+    /// O modelo devolve a frase pontuada ("Branch."); num campo de vocabulário
+    /// a pontuação final é ruído e entraria no cadastro.
+    private static func cleanedDictation(_ text: String?) -> String? {
+        guard let text else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:!?"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
     init(
         settings: AppSettings,
         parakeetModelStore: LocalParakeetModelStore? = nil,
@@ -129,7 +193,10 @@ final class SettingsViewModel {
         onAppearanceThemeChanged: @escaping () -> Void = {},
         onRecordingHUDStyleChanged: @escaping () -> Void = {},
         onDictationHotkeyChanged: @escaping () -> Void = {},
-        onHotkeyCaptureSessionChanged: @escaping (Bool) -> Void = { _ in }
+        onHotkeyCaptureSessionChanged: @escaping (Bool) -> Void = { _ in },
+        onFieldDictationRequested: @escaping (Bool, @escaping (String?) -> Void) -> Void = { _, done in done(nil) },
+        onFieldDictationStopRequested: @escaping () -> Void = {},
+        onFieldDictationCancelRequested: @escaping () -> Void = {}
     ) {
         self.settings = settings
         self.parakeetModelStore = parakeetModelStore ?? .shared
@@ -141,6 +208,9 @@ final class SettingsViewModel {
         self.onRecordingHUDStyleChanged = onRecordingHUDStyleChanged
         self.onDictationHotkeyChanged = onDictationHotkeyChanged
         self.onHotkeyCaptureSessionChanged = onHotkeyCaptureSessionChanged
+        self.onFieldDictationRequested = onFieldDictationRequested
+        self.onFieldDictationStopRequested = onFieldDictationStopRequested
+        self.onFieldDictationCancelRequested = onFieldDictationCancelRequested
         settings.refreshAPIKeyStatus()
         refreshPermissions()
         refreshLocalModelDiskState()

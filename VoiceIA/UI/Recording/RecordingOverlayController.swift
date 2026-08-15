@@ -23,20 +23,35 @@ final class RecordingOverlayController {
             return
         }
 
-        guard style.showsFloatingBar else {
+        // Captura para um campo do app aparece mesmo com HUD "Nenhuma": ali o
+        // usuário clicou num microfone e precisa ver que está gravando — e como
+        // parar. Sem barra, o clique não teria retorno nenhum.
+        guard style.showsFloatingBar || appState.isCapturingForField else {
             hide()
             return
         }
 
         switch appState.recordingState {
         case .recording, .paused, .error:
-            show(using: appState, size: RecordingOverlay.recordingBarSize, cornerRadius: RecordingOverlay.recordingBarSize.height / 2)
+            show(
+                using: appState,
+                size: RecordingOverlay.recordingBarSize,
+                cornerRadius: RecordingOverlay.recordingBarSize.height / 2,
+                // Virar key tiraria o foco do campo que disparou a gravação, e
+                // o arraste que exige isso não interessa nesse fluxo.
+                takesKey: !appState.isCapturingForField
+            )
         case .idle, .transcribing, .inserting, .success, .awaitingManualInsert:
             hide()
         }
     }
 
-    private func show(using appState: AppState, size: CGSize, cornerRadius: CGFloat) {
+    private func show(
+        using appState: AppState,
+        size: CGSize,
+        cornerRadius: CGFloat,
+        takesKey: Bool = true
+    ) {
         currentSize = size
 
         if panel == nil {
@@ -56,7 +71,9 @@ final class RecordingOverlayController {
         panel.alphaValue = 1
         panel.orderFrontRegardless()
         // Precisa ser key para o arraste AppKit receber mouseDown com confiabilidade.
-        panel.makeKey()
+        if takesKey {
+            panel.makeKey()
+        }
     }
 
     private func hide() {

@@ -36,6 +36,13 @@ struct WordReplacementsModal: View {
         .frame(width: 520, height: 460)
         .background(SettingsBackground())
         .preferredColorScheme(viewModel.preferredColorScheme)
+        // Fechar o modal gravando descarta: transcrever para um formulário que
+        // saiu da tela só gastaria bateria e sujaria a pasta de gravações.
+        .onDisappear {
+            if viewModel.dictatingField != nil {
+                viewModel.cancelFieldDictation()
+            }
+        }
     }
 
     // MARK: - Cabeçalho
@@ -213,6 +220,8 @@ struct WordReplacementsModal: View {
             Spacer(minLength: 0)
 
             HStack(spacing: 10) {
+                micButton(for: .original)
+
                 TextField("Original", text: $original)
                     .textFieldStyle(GlassFieldStyle())
 
@@ -224,10 +233,13 @@ struct WordReplacementsModal: View {
                     .textFieldStyle(GlassFieldStyle())
             }
 
-            Text("O original é o que o modelo costuma escrever; a substituição é a grafia correta.")
+            Text(viewModel.dictatingField == .original
+                 ? "Fale a palavra como você costuma falar. O texto vem sem correção, que é o ponto: aqui entra o que o modelo erra."
+                 : "O original é o que o modelo costuma escrever; a substituição é a grafia correta.")
                 .font(.system(size: 11.5))
                 .foregroundStyle(SettingsTheme.secondaryLabel(colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
+                .animation(.easeInOut(duration: 0.15), value: viewModel.dictatingField)
 
             if let errorMessage {
                 Text(errorMessage)
@@ -240,6 +252,45 @@ struct WordReplacementsModal: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, 20)
+    }
+
+    /// Microfone que preenche o campo falando, em vez de digitar.
+    ///
+    /// Reaproveita o ditado inteiro — a mesma barra flutuante aparece, com
+    /// duração, ondas e o ✕ para descartar. O texto não é inserido em lugar
+    /// nenhum: volta direto para este campo.
+    private func micButton(for field: SettingsViewModel.WordReplacementField) -> some View {
+        let isRecording = viewModel.dictatingField == field
+        let isBusyElsewhere = viewModel.dictatingField != nil && !isRecording
+
+        return Button {
+            viewModel.dictate(into: field) { text in
+                switch field {
+                case .original: original = text
+                case .replacement: replacement = text
+                }
+                errorMessage = nil
+            }
+        } label: {
+            Image(systemName: isRecording ? "stop.fill" : "mic.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(isRecording ? Color.white : SettingsTheme.secondaryLabel(colorScheme))
+                .frame(width: 30, height: 30)
+                .background {
+                    RoundedRectangle(cornerRadius: SettingsTheme.fieldCornerRadius, style: .continuous)
+                        .fill(isRecording ? SettingsTheme.accent : SettingsTheme.cardFill(colorScheme))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: SettingsTheme.fieldCornerRadius, style: .continuous)
+                        .strokeBorder(SettingsTheme.cardStroke(colorScheme), lineWidth: SettingsTheme.hairline)
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isBusyElsewhere)
+        .opacity(isBusyElsewhere ? 0.4 : 1)
+        .help(isRecording ? "Encerrar e preencher" : "Preencher falando")
+        .animation(.easeInOut(duration: 0.15), value: isRecording)
     }
 
     // MARK: - Rodapé
@@ -314,6 +365,8 @@ struct WordReplacementsModal: View {
     }
 
     private func returnToList() {
+        // Sair do formulário gravando descarta a captura junto.
+        viewModel.cancelFieldDictation()
         errorMessage = nil
         mode = .list
     }

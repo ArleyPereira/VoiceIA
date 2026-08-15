@@ -56,6 +56,24 @@ final class AppState {
     /// Distingue gravação de menu (só mic) do push-to-talk (transcreve).
     private var isMicrophoneOnlyTest = false
 
+    /// Para onde o texto vai quando a ditagem não é para o app em foco.
+    ///
+    /// Usado pelo microfone dos campos da substituição de palavras: o texto
+    /// volta para quem pediu em vez de ser inserido no input do usuário.
+    ///
+    /// É chamado **exatamente uma vez** por captura, com `nil` quando não houve
+    /// texto (cancelado, silêncio, erro). Sem essa garantia o campo ficaria
+    /// preso no estado "gravando" para sempre.
+    private var fieldCaptureHandler: ((String?) -> Void)?
+    /// `false` enquanto a captura em curso quer o texto cru.
+    private var appliesWordReplacementsInCapture = true
+
+    /// `true` enquanto uma gravação está destinada a um campo do próprio app.
+    ///
+    /// A barra flutuante consulta isto para aparecer mesmo com o HUD desligado
+    /// e para não roubar o foco do campo que disparou a gravação.
+    private(set) var isCapturingForField = false
+
     /// Texto local só para o botão “Inserir texto de teste”.
     static let localInsertionTestText = "Olá, este é um teste do VoiceIA."
 
@@ -111,6 +129,28 @@ final class AppState {
                     self?.pauseHotkeyMonitoringForCapture()
                 } else {
                     self?.reloadDictationHotkey()
+                }
+            },
+            onFieldDictationRequested: { [weak self] rawTranscription, completion in
+                guard let self else {
+                    completion(nil)
+                    return
+                }
+                Task { @MainActor in
+                    await self.beginFieldCapture(
+                        rawTranscription: rawTranscription,
+                        onResult: completion
+                    )
+                }
+            },
+            onFieldDictationStopRequested: { [weak self] in
+                Task { @MainActor in
+                    await self?.stopDictationAndTranscribe()
+                }
+            },
+            onFieldDictationCancelRequested: { [weak self] in
+                Task { @MainActor in
+                    await self?.cancelDictation()
                 }
             }
         )
@@ -277,6 +317,83 @@ final class AppState {
         }
     }
 
+    /// Grava e devolve o texto a um campo do próprio app, sem inserir em lugar
+    /// nenhum.
+    ///
+    /// Reaproveita o pipeline inteiro do ditado — barra flutuante, cancelar,
+    /// pausar —, trocando só o destino. Não captura foco: o texto vai direto
+    /// para o estado da view, o que também evita chamar a API de
+    /// acessibilidade no próprio processo.
+    ///
+    /// - Parameter rawTranscription: `true` pede o texto sem substituição de
+    ///   palavras, para o campo que guarda justamente a grafia errada.
+    func beginFieldCapture(
+        rawTranscription: Bool,
+        onResult: @escaping (String?) -> Void
+    ) async {
+        guard canStartRecording else {
+            onResult(nil)
+            return
+        }
+
+        fieldCaptureHandler = onResult
+        isCapturingForField = true
+        appliesWordReplacementsInCapture = !rawTranscription
+
+        isMicrophoneOnlyTest = false
+        successResetTask?.cancel()
+        permissionDeniedMessage = nil
+        lastHotkeyResultMessage = nil
+        lastInsertionMessage = nil
+        lastTranscriptionText = nil
+        pendingDictationText = nil
+        displayedAudioLevel = 0
+        recordingDurationText = "0:00"
+        accumulatedRecordingDuration = 0
+        LiveAudioMeter.shared.reset()
+        settings.refreshAPIKeyStatus()
+
+        if let gateError = dictationReadinessError() {
+            finishFieldCapture(with: nil)
+            failWithPermission(gateError)
+            return
+        }
+
+        warmLocalModelsIfNeeded()
+
+        do {
+            try await audioRecorder.startRecording()
+            recordingStartedAt = Date()
+            recordingState = .recording
+            lastRecordingURL = nil
+            lastRecordingByteCount = nil
+            startLevelPolling()
+            startDurationTicker()
+        } catch let error as VoiceInputError where error == .microphonePermissionDenied {
+            finishFieldCapture(with: nil)
+            failWithPermission(error)
+        } catch let error as VoiceInputError {
+            finishFieldCapture(with: nil)
+            failRecording(message: error.localizedDescription)
+        } catch {
+            finishFieldCapture(with: nil)
+            failRecording(message: VoiceInputError.recordingFailed.localizedDescription)
+        }
+    }
+
+    /// Encerra a captura avisando quem pediu — inclusive quando não houve texto.
+    private func finishFieldCapture(with text: String?) {
+        let handler = fieldCaptureHandler
+        clearFieldCapture()
+        handler?(text)
+    }
+
+    private func clearFieldCapture() {
+        fieldCaptureHandler = nil
+        isCapturingForField = false
+        appliesWordReplacementsInCapture = true
+    }
+
     /// Pausa a captura (mesmo arquivo; dá para continuar depois).
     func pauseDictation() async {
         guard recordingState == .recording, !isMicrophoneOnlyTest else { return }
@@ -332,6 +449,7 @@ final class AppState {
         let capture = try? await audioRecorder.stopCapture()
         hotkeyService.resetHoldState()
         capturedFocusedElement = nil
+        finishFieldCapture(with: nil)
 
         if let audioURL = capture?.fileURL {
             Task { [weak self] in
@@ -493,6 +611,24 @@ final class AppState {
         stopLevelPolling()
         stopDurationTicker()
 
+        // O destino sai do estado logo no início: são muitos retornos
+        // antecipados aqui (silêncio, erro de gate, falha de ASR), e qualquer um
+        // que esquecesse de limpar deixaria a próxima ditagem normal ser
+        // desviada para um campo que nem está mais na tela.
+        let fieldHandler = fieldCaptureHandler
+        let applyReplacements = appliesWordReplacementsInCapture
+        clearFieldCapture()
+
+        // O campo precisa saber que acabou mesmo quando não veio texto, senão
+        // fica preso em "gravando". `defer` cobre os retornos antecipados sem
+        // depender de lembrar de cada um.
+        var deliveredToField = false
+        defer {
+            if let fieldHandler, !deliveredToField {
+                fieldHandler(nil)
+            }
+        }
+
         if recordingState == .recording, let startedAt = recordingStartedAt {
             accumulatedRecordingDuration += Date().timeIntervalSince(startedAt)
             recordingStartedAt = nil
@@ -577,7 +713,8 @@ final class AppState {
         do {
             transcribed = try await transcriptionService.transcribe(
                 audioURL: audioURL,
-                pcmSamples: capture.pcmSamples
+                pcmSamples: capture.pcmSamples,
+                applyWordReplacements: applyReplacements
             )
             trace.mark("asr")
             lastTranscriptionText = transcribed
@@ -606,6 +743,19 @@ final class AppState {
             return
         }
 
+        // Captura para um campo do app: entrega a quem pediu e para por aqui.
+        // Não insere em lugar nenhum, não vai para o histórico (é vocabulário
+        // sendo cadastrado, não uma ditagem) e o áudio é sempre descartado.
+        if let handler = fieldHandler {
+            recordingState = .idle
+            lastInsertionMessage = nil
+            deliveredToField = true
+            handler(transcribed)
+            trace.summary()
+            deleteRecording(audioURL)
+            return
+        }
+
         await insertTranscribedText(transcribed)
         trace.mark("inserção")
         trace.summary()
@@ -630,6 +780,21 @@ final class AppState {
             let diagnostics = self.audioRecorder.lastDiagnostics
             self.lastCaptureDiagnostics = diagnostics
             self.lastRecordingByteCount = diagnostics.byteCount
+        }
+    }
+
+    /// Apaga a gravação sempre, independente de "manter gravações".
+    ///
+    /// A opção fala sobre ditagens; capturar uma palavra para a lista de
+    /// substituições não é ditagem, e guardar esses trechos só sujaria a pasta.
+    private func deleteRecording(_ audioURL: URL) {
+        Task { [weak self] in
+            guard let self else { return }
+            _ = try? await self.audioRecorder.finalizedRecording()
+            try? self.audioRecorder.deleteRecording(at: audioURL)
+            if self.lastRecordingURL == audioURL {
+                self.lastRecordingURL = nil
+            }
         }
     }
 
