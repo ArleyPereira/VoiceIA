@@ -85,18 +85,16 @@ struct SettingsView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
-                Image(systemName: "waveform.circle.fill")
-                    .font(.system(size: 20))
+                // As mesmas barras da barra de status: o app tem uma marca só,
+                // e o SF Symbol genérico não era ela.
+                Image(nsImage: MenuBarWaveformIcon.image(pointSize: 20))
+                    .renderingMode(.template)
                     .foregroundStyle(SettingsTheme.accent)
+                    .frame(width: 20, height: 20)
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("VoiceIA")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(SettingsTheme.primaryLabel(colorScheme))
-                    Text("Ditado por voz")
-                        .font(.system(size: 11))
-                        .foregroundStyle(SettingsTheme.secondaryLabel(colorScheme))
-                }
+                Text("VoiceIA")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(SettingsTheme.primaryLabel(colorScheme))
             }
             .padding(.horizontal, 12)
             .padding(.top, 28)
