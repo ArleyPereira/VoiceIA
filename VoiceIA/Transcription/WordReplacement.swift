@@ -45,9 +45,13 @@ enum WordReplacementValidationError: Equatable {
 extension WordReplacement {
     /// Mínimo de caracteres aceito nos dois lados.
     ///
-    /// O FluidAudio ignora termo com menos de 3 caracteres justamente porque
-    /// pedaço curto casa com qualquer coisa (o exemplo do paper é `or` → `VR`).
-    /// Recusamos aqui para o usuário receber o motivo em vez de cadastrar um
-    /// par que o motor vai descartar em silêncio.
-    static let minimumLength = 3
+    /// O padrão do FluidAudio é 3, porque pedaço curto casa com qualquer coisa
+    /// (o exemplo do paper é `or` → `VR`). Só que isso barrava sigla legítima —
+    /// `PR` → `pull request` é o caso real. O motor mede apenas o lado da
+    /// substituição, então uma sigla curta na origem nunca correu esse risco.
+    ///
+    /// O que o paper protege continua valendo para uma substituição de dois
+    /// caracteres; ali quem segura são os pisos de similaridade (0,85 no
+    /// caminho principal), bem acima do padrão da biblioteca.
+    static let minimumLength = 2
 }
