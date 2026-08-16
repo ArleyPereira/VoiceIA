@@ -56,6 +56,7 @@ final class AudioPlaybackController: NSObject {
 
     private var player: AVAudioPlayer?
     private var ticker: Task<Void, Never>?
+    private var meterTicker: Task<Void, Never>?
 
     /// Começa a tocar. Trocar de entrada com outra em curso substitui a sessão.
     func play(entryID: UUID, url: URL) throws {
@@ -73,6 +74,9 @@ final class AudioPlaybackController: NSObject {
         }
 
         player.delegate = self
+        // A onda da barra lê o `LiveAudioMeter`; sem metering ela ficaria parada
+        // no piso, dando a impressão de que a reprodução travou.
+        player.isMeteringEnabled = true
         guard player.prepareToPlay(), player.play() else {
             throw StartError.unreadable("o sistema recusou iniciar a reprodução")
         }
@@ -84,8 +88,10 @@ final class AudioPlaybackController: NSObject {
             elapsed: 0,
             duration: player.duration
         )
+        LiveAudioMeter.shared.reset()
         onSessionChanged?()
         startTicker()
+        startMeterTicker()
         logger.notice("Reproduzindo áudio do histórico (\(String(format: "%.1f", player.duration)) s).")
     }
 
@@ -94,6 +100,8 @@ final class AudioPlaybackController: NSObject {
         if player.isPlaying {
             player.pause()
             session?.isPaused = true
+            // Congela a onda junto com o áudio.
+            LiveAudioMeter.shared.setLevel(0)
         } else {
             player.play()
             session?.isPaused = false
@@ -104,6 +112,9 @@ final class AudioPlaybackController: NSObject {
     func stop() {
         ticker?.cancel()
         ticker = nil
+        meterTicker?.cancel()
+        meterTicker = nil
+        LiveAudioMeter.shared.reset()
         player?.stop()
         player = nil
         guard session != nil else { return }
@@ -126,6 +137,37 @@ final class AudioPlaybackController: NSObject {
                 self.onSessionChanged?()
             }
         }
+    }
+
+    /// Alimenta a onda com o volume do que está tocando.
+    ///
+    /// Fica separado do ticker do rótulo porque roda seis vezes mais rápido: a
+    /// onda precisa disso para parecer viva, mas notificar a barra nessa
+    /// frequência a faria refazer o layout 30 vezes por segundo à toa. Aqui só
+    /// o medidor é atualizado — o desenho já acompanha por conta própria.
+    private func startMeterTicker() {
+        meterTicker?.cancel()
+        meterTicker = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(33))
+                guard let self, let player = self.player, self.session != nil else { return }
+                guard !Task.isCancelled, player.isPlaying else { continue }
+
+                player.updateMeters()
+                LiveAudioMeter.shared.setLevel(Self.normalizedLevel(player.averagePower(forChannel: 0)))
+            }
+        }
+    }
+
+    /// dBFS (-160...0) para 0...1, com a mesma curva do medidor de captura.
+    ///
+    /// O corte em -50 dB descarta o ruído de fundo da gravação; sem ele a onda
+    /// nunca desceria nas pausas da fala.
+    private static func normalizedLevel(_ decibels: Float) -> Float {
+        let floor: Float = -50
+        guard decibels > floor else { return 0 }
+        let normalized = (decibels - floor) / -floor
+        return min(1, pow(max(0, normalized), 0.6))
     }
 }
 

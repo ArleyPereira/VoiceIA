@@ -216,9 +216,9 @@ struct RecordingOverlay: View {
 
     /// Mesma barra da gravação, com o tempo subindo a partir de zero.
     ///
-    /// Aqui os controles ficam sempre à mostra, sem depender do hover: quem
-    /// clicou em tocar quer parar quando quiser, e esconder o botão obrigaria a
-    /// descobrir que ele existe.
+    /// Os controles seguem a mesma regra da captura: escondidos até o hover,
+    /// exceto o play quando está pausado — sem ele à vista, uma reprodução
+    /// parada não dá sinal de como continuar.
     private func playbackBar(_ session: AudioPlaybackController.Session) -> some View {
         HStack(spacing: 10) {
             WaveformView(isActive: !session.isPaused, barCount: 42)
@@ -231,21 +231,32 @@ struct RecordingOverlay: View {
                 .monospacedDigit()
                 .allowsHitTesting(false)
 
-            circleButton(
-                icon: session.isPaused ? "play.fill" : "pause.fill",
-                help: session.isPaused ? "Continuar" : "Pausar"
-            ) {
-                appState.playback.togglePause()
+            if isHoveringBar || session.isPaused {
+                circleButton(
+                    icon: session.isPaused ? "play.fill" : "pause.fill",
+                    help: session.isPaused ? "Continuar" : "Pausar"
+                ) {
+                    appState.playback.togglePause()
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.8)))
             }
 
-            circleButton(icon: "xmark", help: "Fechar") {
-                appState.stopHistoryAudio()
+            if isHoveringBar {
+                circleButton(icon: "xmark", help: "Fechar") {
+                    appState.stopHistoryAudio()
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.8)))
             }
         }
         .padding(.horizontal, 14)
         .frame(width: Self.recordingBarSize.width, height: Self.recordingBarSize.height)
         .background { barBackground }
         .overlay { barBorder }
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.14)) {
+                isHoveringBar = hovering
+            }
+        }
     }
 
     /// Botão redondo da barra — o visual é o mesmo em gravação e reprodução.
