@@ -135,10 +135,14 @@ struct HistorySettingsView: View {
         )
     }
 
+    /// Duração em `mm:ss`, com o minuto sempre em dois dígitos.
+    ///
+    /// Largura fixa: numa lista, `0:32` e `12:05` desalinhados chamam mais
+    /// atenção que o próprio número.
     private func durationLabel(for entry: TranscriptionHistoryEntry) -> String? {
         guard let duration = entry.durationSeconds, duration > 0 else { return nil }
         let total = Int(duration.rounded())
-        return String(format: "%d:%02d", total / 60, total % 60)
+        return String(format: "%02d:%02d", total / 60, total % 60)
     }
 }
 
