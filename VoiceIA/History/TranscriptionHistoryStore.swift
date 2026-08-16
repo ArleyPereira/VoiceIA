@@ -9,16 +9,32 @@ struct TranscriptionHistoryEntry: Identifiable, Codable, Equatable, Sendable {
     let createdAt: Date
     let durationSeconds: TimeInterval?
 
+    /// Nome do `.m4a` guardado, quando "manter gravações" estava ligado.
+    ///
+    /// Guardamos o nome, não o caminho: a pasta é derivada do container do app,
+    /// e um caminho absoluto gravado hoje apontaria para o lugar errado se o
+    /// container mudasse. Entradas antigas não têm o campo e decodificam como
+    /// `nil` — é só não mostrar o play nelas.
+    let audioFileName: String?
+
     init(
         id: UUID = UUID(),
         text: String,
         createdAt: Date = Date(),
-        durationSeconds: TimeInterval? = nil
+        durationSeconds: TimeInterval? = nil,
+        audioFileName: String? = nil
     ) {
         self.id = id
         self.text = text
         self.createdAt = createdAt
         self.durationSeconds = durationSeconds
+        self.audioFileName = audioFileName
+    }
+
+    /// Onde o áudio está agora, se ainda estiver lá.
+    var audioURL: URL? {
+        guard let audioFileName else { return nil }
+        return RecordingStorage.directoryURL.appendingPathComponent(audioFileName)
     }
 }
 
@@ -53,31 +69,50 @@ final class TranscriptionHistoryStore {
     }
 
     /// Adiciona uma entrada no topo. Ignora texto vazio.
-    func append(text: String, durationSeconds: TimeInterval? = nil) {
+    func append(
+        text: String,
+        durationSeconds: TimeInterval? = nil,
+        audioFileName: String? = nil
+    ) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
         let entry = TranscriptionHistoryEntry(
             text: trimmed,
-            durationSeconds: durationSeconds
+            durationSeconds: durationSeconds,
+            audioFileName: audioFileName
         )
         entries.insert(entry, at: 0)
         persist()
         logger.notice("Histórico: +1 entrada (total \(self.entries.count, privacy: .public)).")
     }
 
+    /// Remove a entrada e o áudio ligado a ela.
+    ///
+    /// O áudio vai junto porque foi guardado **por causa** desta ditagem: mantê-lo
+    /// órfão deixaria um arquivo que ninguém mais consegue relacionar a nada.
     func delete(id: UUID) {
-        let before = entries.count
-        entries.removeAll { $0.id == id }
-        guard entries.count != before else { return }
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+        let removed = entries.remove(at: index)
+        deleteAudio(of: removed)
         persist()
     }
 
     func deleteAll() {
         guard !entries.isEmpty else { return }
+        entries.forEach(deleteAudio)
         entries = []
         persist()
         logger.notice("Histórico limpo.")
+    }
+
+    private func deleteAudio(of entry: TranscriptionHistoryEntry) {
+        guard let url = entry.audioURL, fileManager.fileExists(atPath: url.path) else { return }
+        do {
+            try fileManager.removeItem(at: url)
+        } catch {
+            logger.error("Falha ao apagar áudio do histórico: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func loadFromDisk() {

@@ -23,6 +23,20 @@ final class RecordingOverlayController {
             return
         }
 
+        // Reprodução também ignora o HUD "Nenhuma": o usuário clicou em tocar e
+        // precisa de onde pausar e fechar. Sem barra, o áudio tocaria sem
+        // controle nenhum.
+        if appState.playback.session != nil {
+            show(
+                using: appState,
+                size: RecordingOverlay.recordingBarSize,
+                cornerRadius: RecordingOverlay.recordingBarSize.height / 2,
+                // A janela de configurações continua em foco atrás.
+                takesKey: false
+            )
+            return
+        }
+
         // Captura para um campo do app aparece mesmo com HUD "Nenhuma": ali o
         // usuário clicou num microfone e precisa ver que está gravando — e como
         // parar. Sem barra, o clique não teria retorno nenhum.

@@ -5,6 +5,8 @@ struct HistorySettingsView: View {
     @Bindable var viewModel: SettingsViewModel
     @State private var showDeleteAllConfirmation = false
     @State private var detailWindowController = HistoryEntryDetailWindowController()
+    /// Motivo pelo qual a reprodução não começou (arquivo apagado por fora).
+    @State private var playbackErrorMessage: String?
     @Environment(\.colorScheme) private var colorScheme
 
     private static let dateFormatter: DateFormatter = {
@@ -53,6 +55,9 @@ struct HistorySettingsView: View {
                             entry: entry,
                             dateLabel: Self.dateFormatter.string(from: entry.createdAt),
                             durationLabel: durationLabel(for: entry),
+                            isPlaying: viewModel.isPlayingHistoryAudio(entry.id),
+                            hasAudio: entry.audioFileName != nil,
+                            onPlay: { play(entry) },
                             onExpand: { openDetail(entry) },
                             onCopy: { viewModel.copyHistoryEntry(entry) },
                             onDelete: {
@@ -82,8 +87,20 @@ struct HistorySettingsView: View {
         } message: {
             Text("Esta ação remove todas as transcrições salvas neste Mac e não pode ser desfeita.")
         }
+        .alert(
+            "Áudio não encontrado",
+            isPresented: Binding(
+                get: { playbackErrorMessage != nil },
+                set: { if !$0 { playbackErrorMessage = nil } }
+            )
+        ) {
+            Button("Entendi", role: .cancel) {}
+        } message: {
+            Text(playbackErrorMessage ?? "")
+        }
         .onDisappear {
             detailWindowController.dismiss()
+            viewModel.stopHistoryAudio()
         }
     }
 
@@ -113,6 +130,15 @@ struct HistorySettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Toca o áudio da entrada, ou explica por que não dá.
+    private func play(_ entry: TranscriptionHistoryEntry) {
+        do {
+            try viewModel.playHistoryAudio(entry)
+        } catch {
+            playbackErrorMessage = error.localizedDescription
         }
     }
 
@@ -151,6 +177,9 @@ private struct HistoryEntryCard: View {
     let entry: TranscriptionHistoryEntry
     let dateLabel: String
     let durationLabel: String?
+    let isPlaying: Bool
+    let hasAudio: Bool
+    let onPlay: () -> Void
     let onExpand: () -> Void
     let onCopy: () -> Void
     let onDelete: () -> Void
@@ -180,6 +209,17 @@ private struct HistoryEntryCard: View {
                     .foregroundStyle(SettingsTheme.tertiaryLabel(colorScheme))
 
                     Spacer(minLength: 8)
+
+                    // Só aparece quando existe áudio guardado: um play que não
+                    // toca nada seria pior que play nenhum.
+                    if hasAudio {
+                        Button(action: onPlay) {
+                            Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .buttonStyle(HistoryIconButtonStyle())
+                        .help(isPlaying ? "Parar reprodução" : "Ouvir o áudio")
+                    }
 
                     Button(action: onExpand) {
                         Image(systemName: "arrow.up.left.and.arrow.down.right")

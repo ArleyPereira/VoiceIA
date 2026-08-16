@@ -79,6 +79,15 @@ final class SettingsViewModel {
     /// Descarta a ditagem de campo em andamento sem transcrever.
     var onFieldDictationCancelRequested: () -> Void
 
+    /// Toca (ou encerra) o áudio de uma entrada do histórico na barra flutuante.
+    var onHistoryAudioPlayRequested: (UUID, URL) throws -> Void
+
+    /// Encerra a reprodução em andamento.
+    var onHistoryAudioStopRequested: () -> Void
+
+    /// Id da entrada tocando agora (`nil` = nenhuma).
+    var playingHistoryEntryID: () -> UUID?
+
     /// Notifica o AppState para re-registrar o atalho global.
     var onDictationHotkeyChanged: () -> Void
 
@@ -191,7 +200,10 @@ final class SettingsViewModel {
         onHotkeyCaptureSessionChanged: @escaping (Bool) -> Void = { _ in },
         onFieldDictationRequested: @escaping (Bool, @escaping (String?) -> Void) -> Void = { _, done in done(nil) },
         onFieldDictationStopRequested: @escaping () -> Void = {},
-        onFieldDictationCancelRequested: @escaping () -> Void = {}
+        onFieldDictationCancelRequested: @escaping () -> Void = {},
+        onHistoryAudioPlayRequested: @escaping (UUID, URL) throws -> Void = { _, _ in },
+        onHistoryAudioStopRequested: @escaping () -> Void = {},
+        playingHistoryEntryID: @escaping () -> UUID? = { nil }
     ) {
         self.settings = settings
         self.parakeetModelStore = parakeetModelStore ?? .shared
@@ -206,6 +218,9 @@ final class SettingsViewModel {
         self.onFieldDictationRequested = onFieldDictationRequested
         self.onFieldDictationStopRequested = onFieldDictationStopRequested
         self.onFieldDictationCancelRequested = onFieldDictationCancelRequested
+        self.onHistoryAudioPlayRequested = onHistoryAudioPlayRequested
+        self.onHistoryAudioStopRequested = onHistoryAudioStopRequested
+        self.playingHistoryEntryID = playingHistoryEntryID
         settings.refreshAPIKeyStatus()
         refreshPermissions()
         refreshLocalModelDiskState()
@@ -337,6 +352,20 @@ final class SettingsViewModel {
 
     func deleteAllHistory() {
         historyStore.deleteAll()
+    }
+
+    func isPlayingHistoryAudio(_ id: UUID) -> Bool {
+        playingHistoryEntryID() == id
+    }
+
+    /// - Throws: quando o `.m4a` não está mais no disco.
+    func playHistoryAudio(_ entry: TranscriptionHistoryEntry) throws {
+        guard let url = entry.audioURL else { return }
+        try onHistoryAudioPlayRequested(entry.id, url)
+    }
+
+    func stopHistoryAudio() {
+        onHistoryAudioStopRequested()
     }
 
     func copyHistoryEntry(_ entry: TranscriptionHistoryEntry) {

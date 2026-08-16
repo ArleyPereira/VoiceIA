@@ -31,7 +31,10 @@ final class SettingsWindowController {
         onHotkeyCaptureSessionChanged: @escaping (Bool) -> Void = { _ in },
         onFieldDictationRequested: @escaping (Bool, @escaping (String?) -> Void) -> Void = { _, done in done(nil) },
         onFieldDictationStopRequested: @escaping () -> Void = {},
-        onFieldDictationCancelRequested: @escaping () -> Void = {}
+        onFieldDictationCancelRequested: @escaping () -> Void = {},
+        onHistoryAudioPlayRequested: @escaping (UUID, URL) throws -> Void = { _, _ in },
+        onHistoryAudioStopRequested: @escaping () -> Void = {},
+        playingHistoryEntryID: @escaping () -> UUID? = { nil }
     ) {
         self.settings = settings
         settings.refreshAPIKeyStatus()
@@ -49,6 +52,9 @@ final class SettingsWindowController {
             viewModel.onFieldDictationRequested = onFieldDictationRequested
             viewModel.onFieldDictationStopRequested = onFieldDictationStopRequested
             viewModel.onFieldDictationCancelRequested = onFieldDictationCancelRequested
+            viewModel.onHistoryAudioPlayRequested = onHistoryAudioPlayRequested
+            viewModel.onHistoryAudioStopRequested = onHistoryAudioStopRequested
+            viewModel.playingHistoryEntryID = playingHistoryEntryID
         } else {
             let viewModel = SettingsViewModel(
                 settings: settings,
@@ -60,7 +66,10 @@ final class SettingsWindowController {
                 onHotkeyCaptureSessionChanged: onHotkeyCaptureSessionChanged,
                 onFieldDictationRequested: onFieldDictationRequested,
                 onFieldDictationStopRequested: onFieldDictationStopRequested,
-                onFieldDictationCancelRequested: onFieldDictationCancelRequested
+                onFieldDictationCancelRequested: onFieldDictationCancelRequested,
+                onHistoryAudioPlayRequested: onHistoryAudioPlayRequested,
+                onHistoryAudioStopRequested: onHistoryAudioStopRequested,
+                playingHistoryEntryID: playingHistoryEntryID
             )
             self.viewModel = viewModel
             let root = SettingsView(viewModel: viewModel)

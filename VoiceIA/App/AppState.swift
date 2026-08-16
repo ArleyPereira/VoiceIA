@@ -37,6 +37,13 @@ final class AppState {
     /// Texto da ditagem quando a inserção automática falhou (barra de resgate).
     var pendingDictationText: String?
 
+    /// Reprodução do áudio de uma entrada do histórico.
+    ///
+    /// Divide a barra flutuante com a gravação. Nunca coexistem: começar a
+    /// tocar com uma ditagem em curso seria disputar o mesmo espaço na tela e o
+    /// mesmo par de botões.
+    let playback = AudioPlaybackController()
+
     private let audioRecorder: any AudioRecorderProtocol
     private let hotkeyService: any GlobalHotkeyServiceProtocol
     private let accessibilityService: any AccessibilityServiceProtocol
@@ -99,6 +106,31 @@ final class AppState {
         refreshAccessibilityStatus()
         startHotkeyMonitoring()
         warmLocalModelsIfNeeded()
+
+        playback.onSessionChanged = { [weak self] in
+            guard let self else { return }
+            self.overlayController.sync(with: self)
+        }
+    }
+
+    /// Toca o áudio ligado a uma entrada do histórico.
+    ///
+    /// Clicar de novo na mesma entrada encerra — o mesmo botão liga e desliga.
+    ///
+    /// - Throws: `AudioPlaybackController.StartError` quando o arquivo sumiu do
+    ///   disco (o usuário pode ter apagado a gravação por fora).
+    func playHistoryAudio(entryID: UUID, url: URL) throws {
+        if playback.session?.entryID == entryID {
+            playback.stop()
+            return
+        }
+        // Uma ditagem em curso tem prioridade sobre ouvir uma antiga.
+        guard recordingState == .idle else { return }
+        try playback.play(entryID: entryID, url: url)
+    }
+
+    func stopHistoryAudio() {
+        playback.stop()
     }
 
     /// Pré-aquece o Parakeet quando o backend local está ativo.
@@ -152,6 +184,15 @@ final class AppState {
                 Task { @MainActor in
                     await self?.cancelDictation()
                 }
+            },
+            onHistoryAudioPlayRequested: { [weak self] entryID, url in
+                try self?.playHistoryAudio(entryID: entryID, url: url)
+            },
+            onHistoryAudioStopRequested: { [weak self] in
+                self?.stopHistoryAudio()
+            },
+            playingHistoryEntryID: { [weak self] in
+                self?.playback.session?.entryID
             }
         )
     }
@@ -277,6 +318,8 @@ final class AppState {
     func beginDictationSession() async {
         guard canStartRecording else { return }
 
+        // A barra é uma só: gravar interrompe o que estiver tocando.
+        playback.stop()
         isMicrophoneOnlyTest = false
         successResetTask?.cancel()
         permissionDeniedMessage = nil
@@ -762,7 +805,14 @@ final class AppState {
 
         // Depois da inserção: o encode JSON do histórico cresce a cada ditagem e
         // não pode ficar entre a transcrição pronta e o texto na tela.
-        recordTranscriptionHistoryIfNeeded(transcribed, durationSeconds: capture.durationSeconds)
+        //
+        // O áudio só é ligado à entrada quando "manter gravações" está ligado —
+        // caso contrário o arquivo é apagado logo abaixo e o link nasceria morto.
+        recordTranscriptionHistoryIfNeeded(
+            transcribed,
+            durationSeconds: capture.durationSeconds,
+            audioFileName: settings.keepRecordingsAfterTranscription ? audioURL.lastPathComponent : nil
+        )
         discardRecordingIfNeeded(audioURL)
     }
 
@@ -815,13 +865,21 @@ final class AppState {
     }
 
     /// Salva no histórico local quando a captura está ligada e não é modo teste.
-    private func recordTranscriptionHistoryIfNeeded(_ text: String, durationSeconds: Double) {
+    private func recordTranscriptionHistoryIfNeeded(
+        _ text: String,
+        durationSeconds: Double,
+        audioFileName: String?
+    ) {
         guard settings.isTranscriptionHistoryEnabled else { return }
         guard !settings.isTestModeEnabled else { return }
         let duration = accumulatedRecordingDuration > 0
             ? accumulatedRecordingDuration
             : durationSeconds
-        historyStore.append(text: text, durationSeconds: duration)
+        historyStore.append(
+            text: text,
+            durationSeconds: duration,
+            audioFileName: audioFileName
+        )
     }
 
     private func insertTranscribedText(_ text: String) async {

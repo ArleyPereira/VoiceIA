@@ -38,6 +38,8 @@ struct RecordingOverlay: View {
         Group {
             if isRescue {
                 rescueBar
+            } else if let session = appState.playback.session {
+                playbackBar(session)
             } else if isCapturing {
                 recordingBar
             } else {
@@ -208,6 +210,60 @@ struct RecordingOverlay: View {
                 isHoveringBar = hovering
             }
         }
+    }
+
+    // MARK: - Reprodução do histórico
+
+    /// Mesma barra da gravação, com o tempo subindo a partir de zero.
+    ///
+    /// Aqui os controles ficam sempre à mostra, sem depender do hover: quem
+    /// clicou em tocar quer parar quando quiser, e esconder o botão obrigaria a
+    /// descobrir que ele existe.
+    private func playbackBar(_ session: AudioPlaybackController.Session) -> some View {
+        HStack(spacing: 10) {
+            WaveformView(isActive: !session.isPaused, barCount: 42)
+                .frame(maxWidth: .infinity)
+                .allowsHitTesting(false)
+
+            Text(session.elapsedLabel)
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.92))
+                .monospacedDigit()
+                .allowsHitTesting(false)
+
+            circleButton(
+                icon: session.isPaused ? "play.fill" : "pause.fill",
+                help: session.isPaused ? "Continuar" : "Pausar"
+            ) {
+                appState.playback.togglePause()
+            }
+
+            circleButton(icon: "xmark", help: "Fechar") {
+                appState.stopHistoryAudio()
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(width: Self.recordingBarSize.width, height: Self.recordingBarSize.height)
+        .background { barBackground }
+        .overlay { barBorder }
+    }
+
+    /// Botão redondo da barra — o visual é o mesmo em gravação e reprodução.
+    private func circleButton(
+        icon: String,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 28, height: 28)
+                .background(Circle().fill(Color.white.opacity(isClassic ? 0.12 : 0.16)))
+                .overlay(Circle().strokeBorder(.white.opacity(isClassic ? 0.10 : 0.14), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     private var pauseButton: some View {
