@@ -38,7 +38,15 @@ final class LocalCtcModelStore {
     }
 
     var isDownloaded: Bool {
+        // O `modelsExist` do FluidAudio só confere os dois `.mlmodelc` e o
+        // `vocab.json` — o `tokenizer.json` passa despercebido e a falta dele
+        // só aparece na primeira ditagem, como boosting que não acontece.
+        // Conferimos aqui o que de fato usamos, para uma pasta incompleta voltar
+        // a oferecer o download em vez de se dizer pronta.
         CtcModels.modelsExist(at: cacheDirectory)
+            && FileManager.default.fileExists(
+                atPath: cacheDirectory.appendingPathComponent("tokenizer.json").path
+            )
     }
 
     func refreshDiskState() {

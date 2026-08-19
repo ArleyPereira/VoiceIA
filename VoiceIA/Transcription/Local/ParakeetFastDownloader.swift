@@ -50,7 +50,11 @@ enum ParakeetFastDownloader {
                 "MelSpectrogram.mlmodelc/",
                 "AudioEncoder.mlmodelc/",
             ],
-            requiredRootFiles: ["vocab.json"]
+            // `vocab.json` é lido pelo `CtcModels`; `tokenizer.json` pelo
+            // `CtcTokenizer`, que tokeniza os termos da substituição. Faltando
+            // o segundo, o modelo carrega e só o boosting falha — em silêncio,
+            // porque o `modelsExist` do FluidAudio não olha para ele.
+            requiredRootFiles: ["vocab.json", "tokenizer.json"]
         )
     }
 
