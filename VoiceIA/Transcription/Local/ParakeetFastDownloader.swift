@@ -1,8 +1,8 @@
 import Foundation
 import OSLog
 
-/// Baixa o pacote Core ML do Parakeet TDT 0.6B V3 direto do Hugging Face com
-/// várias conexões em paralelo.
+/// Baixa um pacote Core ML direto do Hugging Face com várias conexões em
+/// paralelo. Serve o Parakeet TDT e o CTC da substituição de palavras.
 ///
 /// O downloader do FluidAudio busca um arquivo por vez, numa única conexão. O
 /// CDN do Hugging Face entrega ~17 MB/s no começo do arquivo e cai para 4–6
@@ -17,18 +17,46 @@ enum ParakeetFastDownloader {
 
     private static let logger = Logger(subsystem: "dev.arley.santana.VoiceIA", category: "parakeet-download")
 
-    private static let repoPath = "FluidInference/parakeet-tdt-0.6b-v3-coreml"
+    /// O que baixar de um repositório do Hugging Face.
+    ///
+    /// Os dois modelos têm o mesmo formato — `.mlmodelc` mais um vocabulário na
+    /// raiz —, então muda só a lista.
+    struct Package: Sendable {
+        let name: String
+        let repoPath: String
+        /// Diretórios `.mlmodelc` exigidos.
+        let requiredDirectories: [String]
+        /// Arquivos soltos na raiz que o `load` também precisa.
+        let requiredRootFiles: [String]
 
-    /// Diretórios `.mlmodelc` exigidos pelo Parakeet v3 com encoder int8.
-    private static let requiredDirectories = [
-        "Preprocessor.mlmodelc/",
-        "Encoder.mlmodelc/",
-        "Decoder.mlmodelc/",
-        "JointDecisionv3.mlmodelc/",
-    ]
+        /// Parakeet TDT 0.6B V3 com encoder int8.
+        static let parakeet = Package(
+            name: "Parakeet",
+            repoPath: "FluidInference/parakeet-tdt-0.6b-v3-coreml",
+            requiredDirectories: [
+                "Preprocessor.mlmodelc/",
+                "Encoder.mlmodelc/",
+                "Decoder.mlmodelc/",
+                "JointDecisionv3.mlmodelc/",
+            ],
+            requiredRootFiles: ["parakeet_vocab.json"]
+        )
 
-    /// Arquivos soltos na raiz do repo que o `AsrModels.load` também precisa.
-    private static let requiredRootFiles = ["parakeet_vocab.json"]
+        /// CTC 110M usado na substituição de palavras.
+        static let ctc110m = Package(
+            name: "CTC",
+            repoPath: "FluidInference/parakeet-ctc-110m-coreml",
+            requiredDirectories: [
+                "MelSpectrogram.mlmodelc/",
+                "AudioEncoder.mlmodelc/",
+            ],
+            // `vocab.json` é lido pelo `CtcModels`; `tokenizer.json` pelo
+            // `CtcTokenizer`, que tokeniza os termos da substituição. Faltando
+            // o segundo, o modelo carrega e só o boosting falha — em silêncio,
+            // porque o `modelsExist` do FluidAudio não olha para ele.
+            requiredRootFiles: ["vocab.json", "tokenizer.json"]
+        )
+    }
 
     /// Faixas simultâneas. Acima disso o ganho satura e o CDN começa a limitar.
     private static let maxConcurrentSegments = 8
@@ -138,13 +166,14 @@ enum ParakeetFastDownloader {
     /// Só a fase de rede acontece aqui; a compilação Core ML fica para o
     /// primeiro uso do modelo.
     static func download(
+        _ package: Package,
         to cacheDirectory: URL,
         progress: @escaping @Sendable (Int64, Int64) -> Void
     ) async throws {
         let session = makeSession()
         defer { session.finishTasksAndInvalidate() }
 
-        let remoteFiles = try await listRequiredFiles(session: session)
+        let remoteFiles = try await listRequiredFiles(package, session: session)
         let totalBytes = remoteFiles.reduce(0) { $0 + $1.size }
 
         // Arquivos já íntegros em disco não são baixados de novo.
@@ -164,11 +193,11 @@ enum ParakeetFastDownloader {
         guard !pending.isEmpty else { return }
 
         logger.notice(
-            "Baixando \(pending.count) arquivo(s) do Parakeet (\(totalBytes / 1_048_576) MB no total)."
+            "Baixando \(pending.count) arquivo(s) do \(package.name, privacy: .public) (\(totalBytes / 1_048_576) MB no total)."
         )
 
         let counter = ByteCounter(initial: alreadyOnDisk, total: totalBytes, report: progress)
-        let segments = try prepareSegments(for: pending, in: cacheDirectory)
+        let segments = try prepareSegments(for: pending, in: cacheDirectory, repoPath: package.repoPath)
 
         do {
             try await runSegments(segments, session: session, counter: counter)
@@ -190,8 +219,11 @@ enum ParakeetFastDownloader {
         let size: Int64?
     }
 
-    private static func listRequiredFiles(session: URLSession) async throws -> [RemoteFile] {
-        guard let url = URL(string: "https://huggingface.co/api/models/\(repoPath)/tree/main?recursive=true") else {
+    private static func listRequiredFiles(
+        _ package: Package,
+        session: URLSession
+    ) async throws -> [RemoteFile] {
+        guard let url = URL(string: "https://huggingface.co/api/models/\(package.repoPath)/tree/main?recursive=true") else {
             throw DownloadError.invalidResponse("URL da árvore do repositório")
         }
 
@@ -207,13 +239,13 @@ enum ParakeetFastDownloader {
         let files = items.compactMap { item -> RemoteFile? in
             guard item.type == "file" else { return nil }
             let isRequired =
-                requiredDirectories.contains { item.path.hasPrefix($0) }
-                || requiredRootFiles.contains(item.path)
+                package.requiredDirectories.contains { item.path.hasPrefix($0) }
+                || package.requiredRootFiles.contains(item.path)
             return isRequired ? RemoteFile(path: item.path, size: item.size ?? 0) : nil
         }
 
         guard !files.isEmpty else {
-            throw DownloadError.invalidResponse("nenhum arquivo do Parakeet encontrado no repositório")
+            throw DownloadError.invalidResponse("nenhum arquivo do \(package.name) encontrado no repositório")
         }
         return files
     }
@@ -221,6 +253,7 @@ enum ParakeetFastDownloader {
     // MARK: - Faixas
 
     private struct Segment: Sendable {
+        let repoPath: String
         let path: String
         let partial: URL
         /// `nil` baixa o arquivo inteiro numa requisição sem `Range`.
@@ -231,7 +264,8 @@ enum ParakeetFastDownloader {
     /// Cria os `.partial` com o tamanho final e fatia os arquivos grandes.
     private static func prepareSegments(
         for files: [RemoteFile],
-        in cacheDirectory: URL
+        in cacheDirectory: URL,
+        repoPath: String
     ) throws -> [Segment] {
         var segments: [Segment] = []
 
@@ -255,7 +289,7 @@ enum ParakeetFastDownloader {
 
             if file.size <= segmentSize {
                 segments.append(
-                    Segment(path: file.path, partial: partial, range: nil, byteCount: file.size)
+                    Segment(repoPath: repoPath, path: file.path, partial: partial, range: nil, byteCount: file.size)
                 )
                 continue
             }
@@ -270,6 +304,7 @@ enum ParakeetFastDownloader {
                 let upper = min(lower + segmentSize, file.size) - 1
                 segments.append(
                     Segment(
+                        repoPath: repoPath,
                         path: file.path,
                         partial: partial,
                         range: (lower, upper),
@@ -353,7 +388,7 @@ enum ParakeetFastDownloader {
     private static func requestSegment(_ segment: Segment, session: URLSession) async throws -> Data {
         let encodedPath =
             segment.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? segment.path
-        guard let url = URL(string: "https://huggingface.co/\(repoPath)/resolve/main/\(encodedPath)") else {
+        guard let url = URL(string: "https://huggingface.co/\(segment.repoPath)/resolve/main/\(encodedPath)") else {
             throw DownloadError.invalidResponse(segment.path)
         }
 

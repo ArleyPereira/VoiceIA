@@ -19,6 +19,7 @@ struct LocalModelsSettingsView: View {
         VStack(spacing: 16) {
             backendCard
             modelCard
+            wordReplacementModelCard
             footerBar
         }
         .onAppear {
@@ -133,6 +134,115 @@ struct LocalModelsSettingsView: View {
                     downloaded ? SettingsTheme.accent.opacity(0.55) : SettingsTheme.cardStroke(colorScheme),
                     lineWidth: SettingsTheme.hairline
                 )
+        }
+    }
+
+    // MARK: - Modelo da substituição de palavras
+
+    /// Card do CTC 110M — o modelo auxiliar da substituição de palavras.
+    ///
+    /// Fica separado do Parakeet de propósito: o ditado funciona sem ele, e quem
+    /// não usa substituições não deve pagar o download nem a RAM.
+    private var wordReplacementModelCard: some View {
+        let downloaded = viewModel.isCtcModelDownloaded
+        let downloading = viewModel.isCtcModelDownloading
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "character.book.closed.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(SettingsTheme.accent)
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(.white.opacity(0.08)))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text("Substituição de palavras")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white)
+
+                        if downloaded {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Color(red: 0.40, green: 0.90, blue: 0.62))
+                        }
+                    }
+
+                    Text("Modelo extra que ouve o áudio para confirmar a troca antes de aplicá-la — é o que evita corrigir uma palavra que você realmente disse. Baixe separadamente do modelo principal; sem ele o ditado funciona igual, só não corrige o vocabulário cadastrado.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text(viewModel.ctcStatusLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.4))
+                }
+
+                Spacer(minLength: 8)
+
+                ctcActionButton(downloaded: downloaded, downloading: downloading)
+            }
+
+            if downloading, let progress = viewModel.detailedCtcDownloadProgress {
+                VStack(alignment: .leading, spacing: 6) {
+                    ProgressView(value: progress.fraction)
+                        .tint(SettingsTheme.accent)
+                    HStack {
+                        HStack(spacing: 8) {
+                            Text(progress.percentLabel)
+                            Text("·")
+                                .foregroundStyle(.white.opacity(0.35))
+                            Text(progress.speedLabel)
+                        }
+                        Spacer(minLength: 8)
+                        Text(progress.sizeLabel)
+                    }
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.65))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if let error = viewModel.ctcModelStore.lastErrorMessage {
+                Text(error)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color(red: 1.00, green: 0.45, blue: 0.45))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .background {
+            RoundedRectangle(cornerRadius: SettingsTheme.cardCornerRadius, style: .continuous)
+                .fill(downloaded ? SettingsTheme.sidebarSelection(colorScheme) : SettingsTheme.cardFill(colorScheme))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: SettingsTheme.cardCornerRadius, style: .continuous)
+                .strokeBorder(
+                    downloaded ? SettingsTheme.accent.opacity(0.55) : SettingsTheme.cardStroke(colorScheme),
+                    lineWidth: SettingsTheme.hairline
+                )
+        }
+    }
+
+    @ViewBuilder
+    private func ctcActionButton(downloaded: Bool, downloading: Bool) -> some View {
+        if downloading {
+            Button("Cancelar") {
+                viewModel.cancelCtcModelDownload()
+            }
+            .buttonStyle(GhostButtonStyle())
+        } else if downloaded {
+            Button("Excluir") {
+                viewModel.deleteCtcModel()
+            }
+            .buttonStyle(GhostButtonStyle())
+        } else {
+            Button {
+                viewModel.downloadCtcModel()
+            } label: {
+                Label("Download", systemImage: "arrow.down.circle")
+            }
+            .buttonStyle(GhostButtonStyle())
         }
     }
 

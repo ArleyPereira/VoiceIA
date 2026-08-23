@@ -38,6 +38,8 @@ struct RecordingOverlay: View {
         Group {
             if isRescue {
                 rescueBar
+            } else if let session = appState.playback.session {
+                playbackBar(session)
             } else if isCapturing {
                 recordingBar
             } else {
@@ -208,6 +210,71 @@ struct RecordingOverlay: View {
                 isHoveringBar = hovering
             }
         }
+    }
+
+    // MARK: - Reprodução do histórico
+
+    /// Mesma barra da gravação, com o tempo subindo a partir de zero.
+    ///
+    /// Os controles seguem a mesma regra da captura: escondidos até o hover,
+    /// exceto o play quando está pausado — sem ele à vista, uma reprodução
+    /// parada não dá sinal de como continuar.
+    private func playbackBar(_ session: AudioPlaybackController.Session) -> some View {
+        HStack(spacing: 10) {
+            WaveformView(isActive: !session.isPaused, barCount: 42)
+                .frame(maxWidth: .infinity)
+                .allowsHitTesting(false)
+
+            Text(session.elapsedLabel)
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.92))
+                .monospacedDigit()
+                .allowsHitTesting(false)
+
+            if isHoveringBar || session.isPaused {
+                circleButton(
+                    icon: session.isPaused ? "play.fill" : "pause.fill",
+                    help: session.isPaused ? "Continuar" : "Pausar"
+                ) {
+                    appState.playback.togglePause()
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.8)))
+            }
+
+            if isHoveringBar {
+                circleButton(icon: "xmark", help: "Fechar") {
+                    appState.stopHistoryAudio()
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.8)))
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(width: Self.recordingBarSize.width, height: Self.recordingBarSize.height)
+        .background { barBackground }
+        .overlay { barBorder }
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.14)) {
+                isHoveringBar = hovering
+            }
+        }
+    }
+
+    /// Botão redondo da barra — o visual é o mesmo em gravação e reprodução.
+    private func circleButton(
+        icon: String,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 28, height: 28)
+                .background(Circle().fill(Color.white.opacity(isClassic ? 0.12 : 0.16)))
+                .overlay(Circle().strokeBorder(.white.opacity(isClassic ? 0.10 : 0.14), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     private var pauseButton: some View {

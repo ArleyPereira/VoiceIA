@@ -39,7 +39,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: return "Início automático, atalho e permissões do macOS."
         case .appearance: return "Tema da interface e visual da barra de gravação."
         case .models: return "API OpenAI e modelo local."
-        case .transcription: return "Idioma e modelo usados no ditado."
+        case .transcription: return "Idioma do ditado e substituição de palavras."
         case .history: return "Transcrições salvas neste Mac."
         case .recordings: return "O que fazer com os arquivos de áudio."
         }
@@ -71,6 +71,9 @@ struct SettingsView: View {
         .onDisappear {
             viewModel.cancelHotkeyCapture()
         }
+        .sheet(isPresented: $viewModel.isShowingWordReplacements) {
+            WordReplacementsModal(viewModel: viewModel)
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             viewModel.refreshPermissions()
             viewModel.refreshLocalModelDiskState()
@@ -82,18 +85,16 @@ struct SettingsView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
-                Image(systemName: "waveform.circle.fill")
-                    .font(.system(size: 20))
+                // As mesmas barras da barra de status: o app tem uma marca só,
+                // e o SF Symbol genérico não era ela.
+                Image(nsImage: MenuBarWaveformIcon.image(pointSize: 20))
+                    .renderingMode(.template)
                     .foregroundStyle(SettingsTheme.accent)
+                    .frame(width: 20, height: 20)
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("VoiceIA")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(SettingsTheme.primaryLabel(colorScheme))
-                    Text("Ditado por voz")
-                        .font(.system(size: 11))
-                        .foregroundStyle(SettingsTheme.secondaryLabel(colorScheme))
-                }
+                Text("VoiceIA")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(SettingsTheme.primaryLabel(colorScheme))
             }
             .padding(.horizontal, 12)
             .padding(.top, 28)
@@ -447,6 +448,17 @@ struct SettingsView: View {
                 }
             }
 
+            // Fica aqui, e não na aba Transcrição: é o modelo **da API**, e só
+            // faz sentido ao lado da chave que o habilita.
+            SettingsCard(title: "Modelo") {
+                SettingsRow(
+                    title: viewModel.modelLabel,
+                    description: "Modelo econômico, adequado a ditados curtos."
+                ) {
+                    EmptyView()
+                }
+            }
+
             SettingsCard(title: "Créditos") {
                 VStack(spacing: 14) {
                     SettingsRow(
@@ -476,12 +488,51 @@ struct SettingsView: View {
                 languageMenu
             }
 
-            SettingsCard(title: "Modelo") {
+            wordReplacementsCard
+        }
+    }
+
+    private var wordReplacementsCard: some View {
+        // Sem cabeçalho próprio: o título vive na própria linha, junto do total
+        // e do botão. O modal já explica o que a lista faz.
+        SettingsCard {
+            VStack(alignment: .leading, spacing: 10) {
                 SettingsRow(
-                    title: viewModel.modelLabel,
-                    description: "Modelo econômico, adequado a ditados curtos."
+                    title: "Substituição de palavras",
+                    description: viewModel.wordReplacementSummary
                 ) {
-                    EmptyView()
+                    Button("Abrir") {
+                        viewModel.isShowingWordReplacements = true
+                    }
+                    .buttonStyle(GhostButtonStyle())
+                }
+
+                // A lista só tem efeito no motor local; na API o áudio vai para
+                // a OpenAI e não há como injetar vocabulário.
+                if !viewModel.usesLocalTranscription {
+                    Text("O ditado está usando a API da OpenAI. A lista vale apenas no modelo local.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color(red: 1.00, green: 0.70, blue: 0.35))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if viewModel.wordReplacementCount > 0, !viewModel.isCtcModelDownloaded {
+                    // Sem o CTC a lista fica cadastrada e inerte — melhor dizer
+                    // isso aqui do que deixar o usuário achar que está corrigindo.
+                    Text("Falta o modelo da substituição de palavras, em Modelos → Local. Sem ele a lista fica guardada, mas não corrige nada.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color(red: 1.00, green: 0.70, blue: 0.35))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let message = viewModel.wordReplacementImportMessage {
+                    Text(message)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color(red: 0.40, green: 0.90, blue: 0.62))
+                        .transition(.opacity)
+                        .task(id: message) {
+                            try? await Task.sleep(for: .seconds(5))
+                            guard !Task.isCancelled else { return }
+                            viewModel.clearWordReplacementImportMessage()
+                        }
                 }
             }
         }

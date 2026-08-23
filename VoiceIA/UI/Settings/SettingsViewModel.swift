@@ -50,7 +50,9 @@ enum ModelsPane: String, CaseIterable, Identifiable {
 final class SettingsViewModel {
     private let settings: AppSettings
     let parakeetModelStore: LocalParakeetModelStore
+    let ctcModelStore: LocalCtcModelStore
     let historyStore: TranscriptionHistoryStore
+    let wordReplacementStore: WordReplacementStore
 
     /// Janela AppKit que hospeda as configurações (para centralizar diálogos filhos).
     weak var hostWindow: NSWindow?
@@ -63,6 +65,28 @@ final class SettingsViewModel {
 
     /// Notifica o AppState para mostrar/esconder a barra conforme o estilo.
     var onRecordingHUDStyleChanged: () -> Void
+
+    /// Pede ao AppState uma ditagem cujo texto volta para um campo do app.
+    ///
+    /// O `Bool` pede o texto **cru**, sem substituição de palavras. A conclusão
+    /// vem com `nil` quando não houve texto (cancelado, silêncio, erro) — é o
+    /// que tira o campo do estado "gravando".
+    var onFieldDictationRequested: (Bool, @escaping (String?) -> Void) -> Void
+
+    /// Encerra a ditagem de campo em andamento e transcreve.
+    var onFieldDictationStopRequested: () -> Void
+
+    /// Descarta a ditagem de campo em andamento sem transcrever.
+    var onFieldDictationCancelRequested: () -> Void
+
+    /// Toca (ou encerra) o áudio de uma entrada do histórico na barra flutuante.
+    var onHistoryAudioPlayRequested: (UUID, URL) throws -> Void
+
+    /// Encerra a reprodução em andamento.
+    var onHistoryAudioStopRequested: () -> Void
+
+    /// Id da entrada tocando agora (`nil` = nenhuma).
+    var playingHistoryEntryID: () -> UUID?
 
     /// Notifica o AppState para re-registrar o atalho global.
     var onDictationHotkeyChanged: () -> Void
@@ -111,24 +135,92 @@ final class SettingsViewModel {
     /// Sub-aba ativa em Modelos.
     var selectedModelsPane: ModelsPane = .api
 
+    /// Modal de substituição de palavras aberta sobre as configurações.
+    var isShowingWordReplacements = false
+
+    /// Confirmação da última importação, exibida no card da aba Transcrição.
+    private(set) var wordReplacementImportMessage: String?
+
+    /// `true` enquanto o campo "Original" está gravando.
+    ///
+    /// Só ele tem microfone: a substituição é a grafia que o usuário decide,
+    /// então tem de ser digitada exatamente como ele quer — ditá-la só traria
+    /// de volta o palpite do modelo, que é justamente o que se quer corrigir.
+    private(set) var isDictatingOriginal = false
+
+    /// Grava pelo microfone e devolve o texto ao campo "Original".
+    ///
+    /// Clicar de novo no microfone encerra a gravação — mesmo gesto do atalho
+    /// global, sem precisar mirar na barra flutuante.
+    func dictateOriginal(onText: @escaping (String) -> Void) {
+        if isDictatingOriginal {
+            onFieldDictationStopRequested()
+            return
+        }
+
+        isDictatingOriginal = true
+        // O campo "Original" guarda a grafia **errada** do modelo; corrigi-la na
+        // captura tornaria impossível cadastrá-la — daí o texto cru.
+        onFieldDictationRequested(true) { [weak self] text in
+            guard let self else { return }
+            self.isDictatingOriginal = false
+            guard let text = Self.cleanedDictation(text) else { return }
+            onText(text)
+        }
+    }
+
+    /// Descarta a gravação em andamento sem preencher campo nenhum.
+    func cancelFieldDictation() {
+        guard isDictatingOriginal else { return }
+        onFieldDictationCancelRequested()
+    }
+
+    /// Prepara o texto ditado para um campo de uma palavra ou expressão curta.
+    ///
+    /// O modelo devolve a frase pontuada ("Branch."); num campo de vocabulário
+    /// a pontuação final é ruído e entraria no cadastro.
+    private static func cleanedDictation(_ text: String?) -> String? {
+        guard let text else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:!?"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
     init(
         settings: AppSettings,
         parakeetModelStore: LocalParakeetModelStore? = nil,
+        ctcModelStore: LocalCtcModelStore? = nil,
         historyStore: TranscriptionHistoryStore? = nil,
+        wordReplacementStore: WordReplacementStore? = nil,
         onTranscriptionPolicyChanged: @escaping () -> Void = {},
         onAppearanceThemeChanged: @escaping () -> Void = {},
         onRecordingHUDStyleChanged: @escaping () -> Void = {},
         onDictationHotkeyChanged: @escaping () -> Void = {},
-        onHotkeyCaptureSessionChanged: @escaping (Bool) -> Void = { _ in }
+        onHotkeyCaptureSessionChanged: @escaping (Bool) -> Void = { _ in },
+        onFieldDictationRequested: @escaping (Bool, @escaping (String?) -> Void) -> Void = { _, done in done(nil) },
+        onFieldDictationStopRequested: @escaping () -> Void = {},
+        onFieldDictationCancelRequested: @escaping () -> Void = {},
+        onHistoryAudioPlayRequested: @escaping (UUID, URL) throws -> Void = { _, _ in },
+        onHistoryAudioStopRequested: @escaping () -> Void = {},
+        playingHistoryEntryID: @escaping () -> UUID? = { nil }
     ) {
         self.settings = settings
         self.parakeetModelStore = parakeetModelStore ?? .shared
+        self.ctcModelStore = ctcModelStore ?? .shared
         self.historyStore = historyStore ?? .shared
+        self.wordReplacementStore = wordReplacementStore ?? .shared
         self.onTranscriptionPolicyChanged = onTranscriptionPolicyChanged
         self.onAppearanceThemeChanged = onAppearanceThemeChanged
         self.onRecordingHUDStyleChanged = onRecordingHUDStyleChanged
         self.onDictationHotkeyChanged = onDictationHotkeyChanged
         self.onHotkeyCaptureSessionChanged = onHotkeyCaptureSessionChanged
+        self.onFieldDictationRequested = onFieldDictationRequested
+        self.onFieldDictationStopRequested = onFieldDictationStopRequested
+        self.onFieldDictationCancelRequested = onFieldDictationCancelRequested
+        self.onHistoryAudioPlayRequested = onHistoryAudioPlayRequested
+        self.onHistoryAudioStopRequested = onHistoryAudioStopRequested
+        self.playingHistoryEntryID = playingHistoryEntryID
         settings.refreshAPIKeyStatus()
         refreshPermissions()
         refreshLocalModelDiskState()
@@ -262,6 +354,20 @@ final class SettingsViewModel {
         historyStore.deleteAll()
     }
 
+    func isPlayingHistoryAudio(_ id: UUID) -> Bool {
+        playingHistoryEntryID() == id
+    }
+
+    /// - Throws: quando o `.m4a` não está mais no disco.
+    func playHistoryAudio(_ entry: TranscriptionHistoryEntry) throws {
+        guard let url = entry.audioURL else { return }
+        try onHistoryAudioPlayRequested(entry.id, url)
+    }
+
+    func stopHistoryAudio() {
+        onHistoryAudioStopRequested()
+    }
+
     func copyHistoryEntry(_ entry: TranscriptionHistoryEntry) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -269,6 +375,29 @@ final class SettingsViewModel {
     }
 
     /// `true` quando o ditado usa o modelo local deste Mac.
+    // MARK: - Substituição de palavras
+
+    var wordReplacementCount: Int { wordReplacementStore.items.count }
+
+    /// Resumo do card: quantidade cadastrada ou convite para criar a primeira.
+    var wordReplacementSummary: String {
+        switch wordReplacementCount {
+        case 0: return "Nenhuma substituição cadastrada."
+        case 1: return "1 substituição cadastrada."
+        default: return "\(wordReplacementCount) substituições cadastradas."
+        }
+    }
+
+    func reportWordReplacementImport(count: Int) {
+        wordReplacementImportMessage = count == 1
+            ? "1 substituição importada."
+            : "\(count) substituições importadas."
+    }
+
+    func clearWordReplacementImportMessage() {
+        wordReplacementImportMessage = nil
+    }
+
     var usesLocalTranscription: Bool {
         get { settings.transcriptionBackend == "local" }
         set {
@@ -362,6 +491,69 @@ final class SettingsViewModel {
 
     func refreshLocalModelDiskState() {
         parakeetModelStore.refreshDiskState()
+        ctcModelStore.refreshDiskState()
+    }
+
+    // MARK: - Modelo CTC (substituição de palavras)
+
+    var isCtcModelDownloaded: Bool {
+        ctcModelStore.isDownloaded
+    }
+
+    var isCtcModelDownloading: Bool {
+        ctcModelStore.isDownloading
+    }
+
+    var ctcStorageLabel: String {
+        ctcModelStore.onDiskByteCount.voiceIAByteCountLabel
+    }
+
+    /// O card precisa dizer se o download já serve para alguma coisa: baixado
+    /// sem nenhuma substituição cadastrada não corrige nada.
+    var ctcStatusLabel: String {
+        guard isCtcModelDownloaded else { return "~98 MB · opcional" }
+        let count = wordReplacementCount
+        guard count > 0 else {
+            return "\(ctcStorageLabel) · nenhuma substituição cadastrada"
+        }
+        return count == 1
+            ? "\(ctcStorageLabel) · ativo em 1 substituição"
+            : "\(ctcStorageLabel) · ativo em \(count) substituições"
+    }
+
+    var detailedCtcDownloadProgress: (fraction: Double, percentLabel: String, speedLabel: String, sizeLabel: String)? {
+        guard let progress = ctcModelStore.downloadProgress else { return nil }
+        return (
+            progress.fractionCompleted,
+            progress.percentLabel,
+            progress.speedLabel,
+            progress.sizeLabel
+        )
+    }
+
+    func downloadCtcModel() {
+        ctcModelStore.download()
+        Task { @MainActor in
+            while ctcModelStore.isDownloading {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            ctcModelStore.refreshDiskState()
+        }
+    }
+
+    func cancelCtcModelDownload() {
+        ctcModelStore.cancelDownload()
+    }
+
+    func deleteCtcModel() {
+        do {
+            // Solta o CTC da RAM antes de apagar o disco — ele fica quente junto
+            // com o Parakeet, e apagar por baixo deixaria o carregado órfão.
+            onTranscriptionPolicyChanged()
+            try ctcModelStore.delete()
+        } catch {
+            ctcModelStore.reportError(error.localizedDescription)
+        }
     }
 
     // MARK: - Permissões e pastas

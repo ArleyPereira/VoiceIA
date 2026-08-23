@@ -3,48 +3,24 @@ import FluidAudio
 import Observation
 import OSLog
 
-/// Progresso do download do Parakeet (percentual, velocidade e tamanho).
-struct ParakeetDownloadProgress: Sendable, Equatable {
-    var fractionCompleted: Double
-    var bytesReceived: Int64
-    var totalBytes: Int64
-    var bytesPerSecond: Double
-
-    var percentLabel: String {
-        "\(Int((fractionCompleted * 100).rounded()))%"
-    }
-
-    var speedLabel: String {
-        guard bytesPerSecond > 0 else { return "—" }
-        return "\(Int64(bytesPerSecond).voiceIAThroughputLabel)/s"
-    }
-
-    var sizeLabel: String {
-        let received = bytesReceived.voiceIAByteCountLabel
-        if totalBytes > 0 {
-            return "\(received) / \(totalBytes.voiceIAByteCountLabel)"
-        }
-        return received
-    }
-}
-
-/// Download, estado em disco e exclusão do Parakeet TDT 0.6B V3 (FluidAudio / Core ML).
+/// Download, estado em disco e exclusão do CTC 110M usado na substituição de palavras.
 ///
-/// O download usa `ParakeetFastDownloader` (faixas paralelas) em vez do
-/// downloader do FluidAudio, que baixa um arquivo por vez numa conexão só e
-/// rende ~1,4 MB/s contra ~33 MB/s em paralelo. A compilação Core ML fica para
-/// o primeiro ditado.
+/// É um modelo **auxiliar**, separado do Parakeet TDT: o 0.6B não tem head CTC,
+/// e é o CTC que confere no áudio se a palavra falada corresponde ao termo
+/// cadastrado. Sem ele o ditado funciona igual — só não corrige vocabulário.
+///
+/// Por isso o download é opcional e fica num card próprio: quem não usa
+/// substituições não paga os ~60–70 MB de RAM nem o espaço em disco.
 @Observable
 @MainActor
-final class LocalParakeetModelStore {
-    static let shared = LocalParakeetModelStore()
+final class LocalCtcModelStore {
+    static let shared = LocalCtcModelStore()
 
-    /// Tamanho aproximado do pacote Core ML (rótulo da UI antes de listar o repo).
-    static let estimatedByteCount: Int64 = 496_000_000
+    /// Tamanho aproximado, para o rótulo antes de conhecer o repo.
+    static let estimatedByteCount: Int64 = 98_000_000
 
-    private let logger = Logger(subsystem: "dev.arley.santana.VoiceIA", category: "parakeet-store")
-    private let version: AsrModelVersion = .v3
-    private let encoderPrecision: ParakeetEncoderPrecision = .int8
+    private let logger = Logger(subsystem: "dev.arley.santana.VoiceIA", category: "ctc-store")
+    private let variant: CtcModelVariant = .ctc110m
 
     private(set) var isDownloading = false
     private(set) var downloadProgress: ParakeetDownloadProgress?
@@ -58,11 +34,19 @@ final class LocalParakeetModelStore {
     }
 
     var cacheDirectory: URL {
-        AsrModels.defaultCacheDirectory(for: version)
+        CtcModels.defaultCacheDirectory(for: variant)
     }
 
     var isDownloaded: Bool {
-        AsrModels.modelsExist(at: cacheDirectory, version: version, encoderPrecision: encoderPrecision)
+        // O `modelsExist` do FluidAudio só confere os dois `.mlmodelc` e o
+        // `vocab.json` — o `tokenizer.json` passa despercebido e a falta dele
+        // só aparece na primeira ditagem, como boosting que não acontece.
+        // Conferimos aqui o que de fato usamos, para uma pasta incompleta voltar
+        // a oferecer o download em vez de se dizer pronta.
+        CtcModels.modelsExist(at: cacheDirectory)
+            && FileManager.default.fileExists(
+                atPath: cacheDirectory.appendingPathComponent("tokenizer.json").path
+            )
     }
 
     func refreshDiskState() {
@@ -77,7 +61,11 @@ final class LocalParakeetModelStore {
         lastErrorMessage = message
     }
 
-    /// Baixa apenas os arquivos do Hugging Face (sem compile Core ML).
+    /// Baixa o pacote CTC com o mesmo downloader paralelo do Parakeet.
+    ///
+    /// O downloader do FluidAudio não expõe progresso e busca um arquivo por
+    /// vez; usando o nosso, o card do CTC mostra os mesmos indicadores do card
+    /// principal — porcentagem, velocidade e tamanho.
     func download() {
         guard !isDownloading else { return }
         lastErrorMessage = nil
@@ -95,7 +83,7 @@ final class LocalParakeetModelStore {
         downloadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await ParakeetFastDownloader.download(.parakeet, to: targetDir) { received, total in
+                try await ParakeetFastDownloader.download(.ctc110m, to: targetDir) { received, total in
                     Task { @MainActor in
                         self.applyDownloadProgress(received: received, total: total)
                     }
@@ -103,25 +91,17 @@ final class LocalParakeetModelStore {
                 try Task.checkCancellation()
 
                 await MainActor.run {
-                    self.isDownloading = false
-                    self.downloadProgress = nil
-                    self.speedSample = nil
+                    self.finishDownload()
                     self.refreshDiskState()
-                    self.logger.notice("Parakeet TDT 0.6B V3 baixado (compile ocorre no 1º uso).")
+                    self.logger.notice("CTC 110M baixado (compile ocorre no 1º uso).")
                 }
             } catch is CancellationError {
-                await MainActor.run {
-                    self.isDownloading = false
-                    self.downloadProgress = nil
-                    self.speedSample = nil
-                }
+                await MainActor.run { self.finishDownload() }
             } catch {
                 await MainActor.run {
-                    self.isDownloading = false
-                    self.downloadProgress = nil
-                    self.speedSample = nil
+                    self.finishDownload()
                     self.lastErrorMessage = error.localizedDescription
-                    self.logger.error("Download Parakeet falhou: \(error.localizedDescription, privacy: .public)")
+                    self.logger.error("Download do CTC falhou: \(error.localizedDescription, privacy: .public)")
                 }
             }
         }
@@ -130,20 +110,13 @@ final class LocalParakeetModelStore {
     func cancelDownload() {
         downloadTask?.cancel()
         downloadTask = nil
+        finishDownload()
+    }
+
+    private func finishDownload() {
         isDownloading = false
         downloadProgress = nil
         speedSample = nil
-    }
-
-    func delete() throws {
-        cancelDownload()
-        let fm = FileManager.default
-        let dir = cacheDirectory
-        if fm.fileExists(atPath: dir.path) {
-            try fm.removeItem(at: dir)
-        }
-        refreshDiskState()
-        logger.notice("Parakeet removido do disco.")
     }
 
     /// Bytes vêm direto do downloader — os `.partial` são pré-alocados, então
@@ -172,12 +145,16 @@ final class LocalParakeetModelStore {
         )
     }
 
-    /// Bytes do modelo instalado — ignora `.partial` e o sidecar `.etag`.
-    ///
-    /// Os `.partial` são pré-alocados no tamanho final do arquivo, então
-    /// contá-los faria o rótulo mostrar o pacote inteiro logo no começo do
-    /// download. E um órfão de force quit deixaria o número inflado para sempre,
-    /// sugerindo um modelo em disco que não dá para usar.
+    func delete() throws {
+        cancelDownload()
+        let fm = FileManager.default
+        if fm.fileExists(atPath: cacheDirectory.path) {
+            try fm.removeItem(at: cacheDirectory)
+        }
+        refreshDiskState()
+        logger.notice("CTC removido do disco.")
+    }
+
     private func directoryByteCount(at url: URL) -> Int64 {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(

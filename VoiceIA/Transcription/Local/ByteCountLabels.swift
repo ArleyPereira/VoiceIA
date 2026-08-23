@@ -6,6 +6,8 @@ extension Int64 {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        // Sem isto o zero vira "Zero KB", que aparece no início de todo download.
+        formatter.allowsNonnumericFormatting = false
         return formatter.string(fromByteCount: self)
     }
 

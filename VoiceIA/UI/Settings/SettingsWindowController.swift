@@ -19,6 +19,8 @@ final class SettingsWindowController {
     /// - Parameter onRecordingHUDStyleChanged: reaplica a barra flutuante na hora.
     /// - Parameter onDictationHotkeyChanged: re-registra o atalho global.
     /// - Parameter onHotkeyCaptureSessionChanged: pausa/retoma o atalho durante a captura.
+    /// - Parameter onFieldDictationRequested: grava e devolve o texto a um campo do app.
+    /// - Parameter onFieldDictationStopRequested: encerra essa gravação.
     func show(
         settings: AppSettings,
         historyStore: TranscriptionHistoryStore = .shared,
@@ -26,7 +28,13 @@ final class SettingsWindowController {
         onTranscriptionPolicyChanged: @escaping () -> Void = {},
         onRecordingHUDStyleChanged: @escaping () -> Void = {},
         onDictationHotkeyChanged: @escaping () -> Void = {},
-        onHotkeyCaptureSessionChanged: @escaping (Bool) -> Void = { _ in }
+        onHotkeyCaptureSessionChanged: @escaping (Bool) -> Void = { _ in },
+        onFieldDictationRequested: @escaping (Bool, @escaping (String?) -> Void) -> Void = { _, done in done(nil) },
+        onFieldDictationStopRequested: @escaping () -> Void = {},
+        onFieldDictationCancelRequested: @escaping () -> Void = {},
+        onHistoryAudioPlayRequested: @escaping (UUID, URL) throws -> Void = { _, _ in },
+        onHistoryAudioStopRequested: @escaping () -> Void = {},
+        playingHistoryEntryID: @escaping () -> UUID? = { nil }
     ) {
         self.settings = settings
         settings.refreshAPIKeyStatus()
@@ -41,6 +49,12 @@ final class SettingsWindowController {
             viewModel.onRecordingHUDStyleChanged = onRecordingHUDStyleChanged
             viewModel.onDictationHotkeyChanged = onDictationHotkeyChanged
             viewModel.onHotkeyCaptureSessionChanged = onHotkeyCaptureSessionChanged
+            viewModel.onFieldDictationRequested = onFieldDictationRequested
+            viewModel.onFieldDictationStopRequested = onFieldDictationStopRequested
+            viewModel.onFieldDictationCancelRequested = onFieldDictationCancelRequested
+            viewModel.onHistoryAudioPlayRequested = onHistoryAudioPlayRequested
+            viewModel.onHistoryAudioStopRequested = onHistoryAudioStopRequested
+            viewModel.playingHistoryEntryID = playingHistoryEntryID
         } else {
             let viewModel = SettingsViewModel(
                 settings: settings,
@@ -49,7 +63,13 @@ final class SettingsWindowController {
                 onAppearanceThemeChanged: applyTheme,
                 onRecordingHUDStyleChanged: onRecordingHUDStyleChanged,
                 onDictationHotkeyChanged: onDictationHotkeyChanged,
-                onHotkeyCaptureSessionChanged: onHotkeyCaptureSessionChanged
+                onHotkeyCaptureSessionChanged: onHotkeyCaptureSessionChanged,
+                onFieldDictationRequested: onFieldDictationRequested,
+                onFieldDictationStopRequested: onFieldDictationStopRequested,
+                onFieldDictationCancelRequested: onFieldDictationCancelRequested,
+                onHistoryAudioPlayRequested: onHistoryAudioPlayRequested,
+                onHistoryAudioStopRequested: onHistoryAudioStopRequested,
+                playingHistoryEntryID: playingHistoryEntryID
             )
             self.viewModel = viewModel
             let root = SettingsView(viewModel: viewModel)
