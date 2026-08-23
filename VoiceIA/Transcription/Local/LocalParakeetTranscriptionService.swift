@@ -103,34 +103,50 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
         }
 
         let inferStart = Date()
-        var boosted: String?
+
+        // O batch roda sempre, inclusive com boosting ligado, e é a referência
+        // do que foi dito. Custa cerca de um quinto do caminho com vocabulário
+        // (160 ms contra 800 ms em 36 s de áudio) e é a única forma de detectar
+        // que o boosting perdeu conteúdo: sem ter com o que comparar, um texto
+        // pela metade chega ao usuário parecendo completo.
+        var decoderState = TdtDecoderState.make(decoderLayers: await decoderLayerCount(of: manager))
+        let batchText = try await manager.transcribe(
+            samples, decoderState: &decoderState, language: language
+        ).text
+
+        var text = batchText
+        var outcome = wantsBoosting ? "recuado para batch" : "off"
+
         if wantsBoosting {
             do {
-                boosted = try await transcribeWithBoosting(samples: samples, replacements: replacements)
-                if boosted == nil {
-                    logger.error("Boosting devolveu texto vazio — repetindo no caminho batch.")
+                if let boosted = try await transcribeWithBoosting(
+                    samples: samples,
+                    replacements: replacements
+                ) {
+                    if Self.preservesContent(boosted, comparedTo: batchText) {
+                        text = boosted
+                        outcome = "aplicado"
+                    } else {
+                        logger.error(
+                            "Boosting devolveu \(boosted.count) caracteres contra \(batchText.count) do batch — texto encurtou, mantendo o batch."
+                        )
+                    }
+                } else {
+                    logger.error("Boosting devolveu texto vazio — mantendo o batch.")
                 }
             } catch {
                 // Falha no boosting não pode custar a ditagem: o texto sem
                 // correção é muito melhor que erro na cara do usuário.
                 logger.error(
-                    "Boosting falhou (\(error.localizedDescription, privacy: .public)) — caindo para o caminho batch."
+                    "Boosting falhou (\(error.localizedDescription, privacy: .public)) — mantendo o batch."
                 )
             }
-        }
-
-        let text: String
-        if let boosted {
-            text = boosted
-        } else {
-            var decoderState = TdtDecoderState.make(decoderLayers: await decoderLayerCount(of: manager))
-            text = try await manager.transcribe(samples, decoderState: &decoderState, language: language).text
         }
         let inferMs = Date().timeIntervalSince(inferStart) * 1000
         let totalMs = Date().timeIntervalSince(pipelineStart) * 1000
 
         logger.notice(
-            "Parakeet OK — load \(String(format: "%.0f", loadMs)) ms, infer \(String(format: "%.0f", inferMs)) ms, total \(String(format: "%.0f", totalMs)) ms, boosting \(boosted != nil ? "aplicado" : (wantsBoosting ? "recuado para batch" : "off"), privacy: .public)."
+            "Parakeet OK — load \(String(format: "%.0f", loadMs)) ms, infer \(String(format: "%.0f", inferMs)) ms, total \(String(format: "%.0f", totalMs)) ms, boosting \(outcome, privacy: .public)."
         )
 
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -416,10 +432,9 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
             )
         )
 
-        // `.microphone` só descreve a origem do áudio para o manager; o PCM é o
-        // mesmo que o caminho batch recebe.
+        // `.microphone` só descreve a origem do áudio para o manager.
         try await streaming.startStreaming(source: .microphone)
-        await streaming.streamAudio(try Self.makeBuffer(from: samples))
+        await streaming.streamAudio(try Self.makeBuffer(from: Self.trimmingTrailingSilence(samples)))
         let text = try await streaming.finish()
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return Self.restoreRegisteredSpelling(in: text, replacements: replacements)
@@ -458,6 +473,65 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
             )
         }
         return result
+    }
+
+    /// O boosting pode **corrigir** palavras, nunca remover conteúdo.
+    ///
+    /// Trocar `brand` por `branch` mexe em alguns caracteres; devolver metade do
+    /// texto é outra coisa. Esta é a rede que impede uma falha da janela
+    /// deslizante — a do silêncio final ou qualquer outra — de chegar ao usuário
+    /// como ditagem truncada, que é o pior tipo de erro aqui: some conteúdo sem
+    /// nada na tela indicando que sumiu.
+    ///
+    /// A folga de 10% cobre a diferença legítima entre os dois caminhos (as
+    /// correções e a pontuação mudam pouca coisa); a perda real observada foi de
+    /// quase metade.
+    private static func preservesContent(_ boosted: String, comparedTo batch: String) -> Bool {
+        guard !batch.isEmpty else { return !boosted.isEmpty }
+        return Double(boosted.count) >= Double(batch.count) * 0.9
+    }
+
+    /// Corta o silêncio do fim do PCM, preservando uma margem curta.
+    ///
+    /// É a diferença entre a ditagem chegar inteira ou pela metade. No manager
+    /// de streaming, o trecho mais recente fica num buffer "volátil" e só é
+    /// promovido a confirmado quando a **janela seguinte** chega. Uma janela
+    /// final de silêncio sobrescreve esse volátil com vazio, e o `finish()` do
+    /// caminho com vocabulário monta o texto de confirmado + volátil — então o
+    /// último trecho falado, que pode passar de dez segundos, simplesmente some.
+    ///
+    /// Como toda ditagem real termina com um instante de silêncio entre parar de
+    /// falar e soltar o atalho, isso acontecia o tempo todo. Medido: 25 s de fala
+    /// com 1 s de silêncio devolviam 184 de 360 caracteres; aparando, 362.
+    ///
+    /// A margem existe para não comer o finalzinho de uma palavra que decai.
+    private static func trimmingTrailingSilence(
+        _ samples: [Float],
+        marginSeconds: Double = 0.25
+    ) -> [Float] {
+        let window = 1_600                                  // 100 ms a 16 kHz
+        let threshold = SpeechPresenceAnalyzer.loudSampleThreshold / 4
+
+        var lastVoicedEnd = 0
+        var start = 0
+        while start < samples.count {
+            let end = min(start + window, samples.count)
+            var sumOfSquares: Float = 0
+            for index in start..<end {
+                sumOfSquares += samples[index] * samples[index]
+            }
+            if (sumOfSquares / Float(end - start)).squareRoot() > threshold {
+                lastVoicedEnd = end
+            }
+            start += window
+        }
+
+        // Sem nenhuma janela com energia, devolve como veio: quem decide se há
+        // fala é o `SpeechPresenceAnalyzer`, antes daqui.
+        guard lastVoicedEnd > 0 else { return samples }
+
+        let keep = min(samples.count, lastVoicedEnd + Int(marginSeconds * 16_000))
+        return keep < samples.count ? Array(samples[0..<keep]) : samples
     }
 
     /// PCM 16 kHz mono em `AVAudioPCMBuffer`, formato que o manager de streaming exige.
