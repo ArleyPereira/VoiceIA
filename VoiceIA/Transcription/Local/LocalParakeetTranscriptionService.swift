@@ -29,6 +29,7 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
     private var cachedCtcTokenizer: CtcTokenizer?
     private var ctcLoadTask: Task<CtcModels, Error>?
     private var warmTask: Task<Void, Never>?
+    private var ctcWarmTask: Task<Void, Never>?
     private var idleUnloadTask: Task<Void, Never>?
 
     /// Após este tempo ocioso o Core ML sai da RAM (Spokenly também não fica
@@ -73,7 +74,7 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
             throw VoiceInputError.emptyRecording
         }
         logger.notice(
-            "Parakeet: PCM em memória (\(samples.count) amostras, \(String(format: "%.2f", Double(samples.count) / 16_000.0))s)."
+            "Parakeet: PCM em memória (\(samples.count, privacy: .public) amostras, \(String(format: "%.2f", Double(samples.count) / 16_000.0), privacy: .public)s)."
         )
 
         guard SpeechPresenceAnalyzer.hasSpeechEnergy(in: samples) else {
@@ -146,7 +147,7 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
         let totalMs = Date().timeIntervalSince(pipelineStart) * 1000
 
         logger.notice(
-            "Parakeet OK — load \(String(format: "%.0f", loadMs)) ms, infer \(String(format: "%.0f", inferMs)) ms, total \(String(format: "%.0f", totalMs)) ms, boosting \(outcome, privacy: .public)."
+            "Parakeet OK — load \(String(format: "%.0f", loadMs), privacy: .public) ms, infer \(String(format: "%.0f", inferMs), privacy: .public) ms, total \(String(format: "%.0f", totalMs), privacy: .public) ms, boosting \(outcome, privacy: .public)."
         )
 
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -164,9 +165,13 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
     func warmUpIfNeeded() {
         cancelIdleUnload()
         cacheLock.lock()
-        let alreadyWarm = cachedManager != nil
+        let alreadyWarm = cachedManager != nil && cachedCtcModels != nil
+        let tdtAlreadyWarm = cachedManager != nil
         cacheLock.unlock()
         if alreadyWarm { return }
+
+        warmCtcIfNeeded()
+        if tdtAlreadyWarm { return }
 
         warmTask?.cancel()
         warmTask = Task { [weak self] in
@@ -183,7 +188,7 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
                 let silence = [Float](repeating: 0, count: 16_000)
                 _ = try? await manager.transcribe(silence, decoderState: &state, language: .portuguese)
                 self.logger.notice(
-                    "Parakeet aquecido em \(String(format: "%.1f", Date().timeIntervalSince(start))) s."
+                    "Parakeet aquecido em \(String(format: "%.1f", Date().timeIntervalSince(start)), privacy: .public) s."
                 )
                 self.scheduleIdleUnload()
             } catch {
@@ -194,10 +199,47 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
         }
     }
 
+    /// Carrega o CTC junto com o TDT, quando ele vai mesmo ser usado.
+    ///
+    /// A primeira carga numa instalação compila o Core ML para o Neural Engine e
+    /// leva ~13 s; as seguintes leem o resultado compilado e levam ~0,2 s.
+    /// Medido em processos separados: 13,1 s / 0,2 s / 0,2 s.
+    ///
+    /// Sem isto, essa compilação caía na primeira ditagem que usasse
+    /// substituição — o usuário esperava os 13 s parado, olhando para a barra.
+    /// Aqui ela acontece em segundo plano, no launch e ao apertar o atalho,
+    /// enquanto ele ainda está falando.
+    ///
+    /// Só aquece quando há substituição cadastrada e o modelo está em disco:
+    /// quem não usa o recurso não deve pagar RAM nem compilação por ele.
+    private func warmCtcIfNeeded() {
+        ctcWarmTask?.cancel()
+        ctcWarmTask = Task { [weak self] in
+            guard let self else { return }
+
+            let shouldWarm = await MainActor.run {
+                !WordReplacementStore.shared.items.isEmpty
+                    && LocalCtcModelStore.shared.isDownloaded
+            }
+            guard shouldWarm, !Task.isCancelled else { return }
+
+            self.cacheLock.lock()
+            let alreadyLoaded = self.cachedCtcModels != nil
+            self.cacheLock.unlock()
+            guard !alreadyLoaded else { return }
+
+            // O erro não é fatal: a ditagem tenta de novo e, se falhar lá,
+            // recua para o batch com o texto completo.
+            _ = try? await self.loadCtcModels()
+        }
+    }
+
     /// Libera o Parakeet da memória (troca de modelo / política / ocioso).
     func unloadCachedModel() {
         warmTask?.cancel()
         warmTask = nil
+        ctcWarmTask?.cancel()
+        ctcWarmTask = nil
         cancelIdleUnload()
 
         cacheLock.lock()
@@ -597,7 +639,7 @@ final class LocalParakeetTranscriptionService: TranscriptionService, @unchecked 
                     self.ctcLoadTask = nil
                     self.cacheLock.unlock()
                     self.logger.notice(
-                        "CTC carregado em \(String(format: "%.1f", Date().timeIntervalSince(start))) s."
+                        "CTC carregado em \(String(format: "%.1f", Date().timeIntervalSince(start)), privacy: .public) s."
                     )
                 }
                 return loaded
