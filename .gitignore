@@ -3,3 +3,6 @@
 xcuserdata/
 *.xcuserstate
 .tmp-fluidaudio/
+
+# Dado do usuário: a lista vive em ~/Library/Application Support/VoiceIA
+word-replacements.json
